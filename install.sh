@@ -14,6 +14,42 @@ echo "claude-evolve installer"
 echo "======================="
 echo ""
 
+# ── OS detection ────────────────────────────────────────────────────────────
+# Used to choose package-manager hints. Stays empty on unrecognized platforms;
+# install hints fall back to a generic "see project page" message.
+OS_KIND=""
+case "$(uname -s 2>/dev/null)" in
+  Darwin) OS_KIND="macos" ;;
+  Linux)  OS_KIND="linux" ;;
+esac
+
+# install_hint <tool>
+# Returns a single-line, OS-appropriate suggestion for installing <tool>.
+install_hint() {
+  local tool="$1"
+  case "$OS_KIND" in
+    macos)
+      case "$tool" in
+        jq)    echo "Install with: brew install jq" ;;
+        yq)    echo "Install with: brew install yq  (mikefarah/yq v4)" ;;
+        flock) echo "Install with: brew install flock" ;;
+        *)     echo "Install $tool via your package manager" ;;
+      esac
+      ;;
+    linux)
+      case "$tool" in
+        jq)    echo "Install with your package manager (e.g., apt-get install jq, dnf install jq, pacman -S jq)" ;;
+        yq)    echo "Install mikefarah/yq v4 from https://github.com/mikefarah/yq#install (the Python yq is NOT compatible)" ;;
+        flock) echo "flock is part of util-linux; install via your package manager (e.g., apt-get install util-linux)" ;;
+        *)     echo "Install $tool via your package manager" ;;
+      esac
+      ;;
+    *)
+      echo "Install $tool — see the tool's project page for instructions"
+      ;;
+  esac
+}
+
 # ── Prerequisites ───────────────────────────────────────────────────────────
 
 check_required() {
@@ -28,29 +64,34 @@ check_required() {
 
 echo "Checking prerequisites..."
 
-check_required "jq" "Install with: brew install jq"
+check_required "jq" "$(install_hint jq)"
 check_required "claude" "Install Claude Code: https://docs.anthropic.com/en/docs/claude-code"
-check_required "flock" "Install with: brew install flock"
+check_required "flock" "$(install_hint flock)"
 
-# yq: offer to install if missing
+# yq: offer auto-install on macOS via brew; otherwise direct user to manual install.
 if ! command -v yq &>/dev/null; then
   echo "  [!!] yq is not installed (required for config parsing)"
-  read -rp "  Install yq via 'brew install yq'? [y/N] " yn
-  case "$yn" in
-    [Yy]*)
-      echo "  Installing yq..."
-      brew install yq
-      if ! command -v yq &>/dev/null; then
-        echo "ERROR: yq installation failed."
+  if [[ "$OS_KIND" == "macos" ]] && command -v brew &>/dev/null; then
+    read -rp "  Install yq via 'brew install yq'? [y/N] " yn
+    case "$yn" in
+      [Yy]*)
+        echo "  Installing yq..."
+        brew install yq
+        if ! command -v yq &>/dev/null; then
+          echo "ERROR: yq installation failed."
+          exit 1
+        fi
+        echo "  [ok] yq installed"
+        ;;
+      *)
+        echo "ERROR: yq is required. Aborting."
         exit 1
-      fi
-      echo "  [ok] yq installed"
-      ;;
-    *)
-      echo "ERROR: yq is required. Aborting."
-      exit 1
-      ;;
-  esac
+        ;;
+    esac
+  else
+    echo "ERROR: yq is required. $(install_hint yq)"
+    exit 1
+  fi
 else
   echo "  [ok] yq"
 fi
@@ -61,7 +102,7 @@ fi
 if ! yq --version 2>&1 | grep -Eq 'mikefarah.*version v?4\.'; then
   echo "ERROR: claude-evolve requires mikefarah/yq v4."
   echo "       Found: $(yq --version 2>&1)"
-  echo "       Install: brew install yq  (or see https://github.com/mikefarah/yq#install)"
+  echo "       $(install_hint yq)"
   exit 1
 fi
 echo "  [ok] yq is mikefarah v4"

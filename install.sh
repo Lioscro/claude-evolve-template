@@ -295,6 +295,56 @@ fi
 
 echo ""
 
+# ── Configure upstream remote (for repos created from the template) ────────
+
+TEMPLATE_REPO_PATH="Lioscro/claude-evolve-template"
+TEMPLATE_FETCH_URL="https://github.com/${TEMPLATE_REPO_PATH}.git"
+
+setup_upstream() {
+  if ! command -v git &>/dev/null; then
+    echo "  [--] git not found; skipping upstream remote setup"
+    return
+  fi
+
+  if ! git -C "$REPO_DIR" rev-parse --git-dir &>/dev/null; then
+    echo "  [--] $REPO_DIR is not a git repository; skipping upstream remote setup"
+    return
+  fi
+
+  # If origin already points at the template, this IS the template repo.
+  local origin_url
+  origin_url=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || echo "")
+  if [[ "$origin_url" == *"$TEMPLATE_REPO_PATH"* ]]; then
+    echo "  [--] origin matches the template ($TEMPLATE_REPO_PATH); skipping"
+    return
+  fi
+
+  local existing_upstream_url
+  existing_upstream_url=$(git -C "$REPO_DIR" remote get-url upstream 2>/dev/null || echo "")
+
+  if [[ -z "$existing_upstream_url" ]]; then
+    git -C "$REPO_DIR" remote add upstream "$TEMPLATE_FETCH_URL"
+    echo "  [ok] added upstream: $TEMPLATE_FETCH_URL"
+    git -C "$REPO_DIR" remote set-url --push upstream no_push
+    echo "  [ok] locked upstream push URL to 'no_push'"
+  elif [[ "$existing_upstream_url" == *"$TEMPLATE_REPO_PATH"* ]]; then
+    echo "  [ok] upstream already points at template"
+    local current_push_url
+    current_push_url=$(git -C "$REPO_DIR" remote get-url --push upstream 2>/dev/null || echo "")
+    if [[ "$current_push_url" != "no_push" ]]; then
+      git -C "$REPO_DIR" remote set-url --push upstream no_push
+      echo "  [ok] locked upstream push URL to 'no_push'"
+    fi
+  else
+    echo "  [--] upstream is set to $existing_upstream_url (not the template); leaving alone"
+  fi
+}
+
+echo "Configuring git upstream remote..."
+setup_upstream || true
+
+echo ""
+
 # ── Summary ─────────────────────────────────────────────────────────────────
 
 echo "Installation complete!"
@@ -304,3 +354,9 @@ echo "Hooks config:  $SETTINGS_FILE"
 echo "Projects dir:  $EVOLVE_DIR/projects/"
 echo ""
 echo "To uninstall:  $REPO_DIR/uninstall.sh"
+
+if git -C "$REPO_DIR" remote get-url upstream &>/dev/null; then
+  echo ""
+  echo "Pull template updates:"
+  echo "  git -C $REPO_DIR fetch upstream && git -C $REPO_DIR merge upstream/main"
+fi

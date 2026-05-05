@@ -1,0 +1,35 @@
+name: Template Sync
+
+# Runs in repos created from the claude-evolve-template public template.
+# Opens a pull request when the upstream template has new commits, so the
+# downstream repo can review and merge template updates without manual
+# `git pull upstream main` workflows.
+#
+# Skipped when running inside the template repo itself.
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'   # Mondays at 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  template-sync:
+    name: template-sync
+    runs-on: ubuntu-latest
+    if: github.repository != 'Lioscro/claude-evolve-template'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync from upstream template
+        uses: AndreasAugustin/actions-template-sync@8a0f668b83c32a0f673353086d74f12b8853d4f5  # v2.5.3
+        with:
+          source_repo_path: Lioscro/claude-evolve-template
+          upstream_branch: main
+          pr_branch_name_prefix: chore/template-sync
+          pr_labels: template-sync
+          pr_title: "chore: sync from claude-evolve-template"

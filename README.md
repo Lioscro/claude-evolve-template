@@ -171,20 +171,54 @@ frequency gate):
 
 ## Updating from the template
 
-When the public template repo gets a bug fix or new feature, pull it in:
+Updates from the public template arrive in your private repo two ways.
+
+### Automated sync (default)
+
+The template ships with `.github/workflows/template-sync.yml`, a GitHub
+Actions workflow that runs weekly (Mondays 08:00 UTC) and on manual
+dispatch. When the upstream template has new commits, the workflow opens
+a pull request against your `main` proposing the diff. Review and merge
+the PR like any other.
+
+The workflow is guarded so it no-ops in the template repo itself. It
+relies on [AndreasAugustin/actions-template-sync](https://github.com/AndreasAugustin/actions-template-sync),
+pinned to a specific commit SHA for supply-chain hygiene.
+
+For the workflow to open PRs, enable two settings under
+**Settings → Actions → General** in your repo:
+
+- **Workflow permissions**: *Read and write*.
+- **Allow GitHub Actions to create and approve pull requests**: enabled.
+
+To trigger a sync immediately, open the **Actions** tab, select
+**Template Sync**, and click **Run workflow**.
+
+To disable auto-sync, delete the workflow file:
+
+```bash
+rm .github/workflows/template-sync.yml
+git commit -am "Remove template auto-sync"
+git push
+```
+
+### Manual
+
+You can also pull at any time:
 
 ```bash
 git pull upstream main
 ./install.sh
 ```
 
-The `upstream` remote is configured automatically by `install.sh` on first
-run. Re-running `install.sh` after a merge picks up any new hooks,
-symlinks, or scripts. Both commands are idempotent.
+The `upstream` remote is configured automatically by `install.sh` on
+first run. Re-running `install.sh` after a merge picks up any new hooks,
+symlinks, or scripts.
 
-`git push upstream` will fail (push URL is `no_push`) — this is
-intentional, to prevent your private instincts from leaking to the public
-template.
+### Push safety
+
+`git push upstream` always fails (push URL is `no_push`) — intentional,
+to prevent your private instincts from leaking to the public template.
 
 ---
 

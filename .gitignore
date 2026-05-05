@@ -1,0 +1,9 @@
+# Observations are transient JSONL -- large, archived after processing
+data/projects/*/observations/
+# Lock files are ephemeral (flock-based and mkdir-based fallback)
+data/projects/*/evolve.lock
+data/projects/*/evolve.lock.d/
+data/global/global.lock
+data/global/global.lock.d/
+
+!.claude/feature-implementation-workflow/

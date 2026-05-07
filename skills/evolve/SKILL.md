@@ -105,7 +105,10 @@ Read the full proposal YAML at `file`. Then:
   - **Title and description**
   - **Source instincts**: for each entry in `source_instincts`, show trigger and confidence
   - **Proposed content**: the full artifact text (`proposed_content`)
-  - **Destination path**: where the artifact will be written (based on type and name)
+  - **Destination path**: where the artifact will be written, derived from `type` and `name`:
+    - `skill` → `<project_root>/.claude/skills/evolve-<name>.md`
+    - `rule`  → `<project_root>/.claude/rules/evolve-<name>.md`
+    - `memory` → `~/.claude/evolve/projects/<project_id>/memory/<name>.md` (in the repo's `data/projects/<project_id>/memory/` via the symlink; auto-injected on every SessionStart)
   - If `approvable_here=false`, also show the tag: `[readonly here — cd into <project_id> to approve]`
 
 ### Action prompt

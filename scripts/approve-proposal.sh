@@ -17,6 +17,15 @@ PROPOSAL_ID="$2"
 PROJECT_ROOT="$3"
 CONTENT_FILE="$4"
 
+# Validate PROPOSAL_ID -- it flows into yq query strings throughout this script.
+# (PROP_NAME is also validated below, but it's derived from PROPOSAL_ID via sed
+# stripping, so a malformed PROPOSAL_ID could pass the PROP_NAME check after
+# sanitization. Validate the source.)
+if ! validate_id "$PROPOSAL_ID"; then
+  echo "ERROR: invalid PROPOSAL_ID (must match $_EVOLVE_ID_REGEX): $PROPOSAL_ID" >&2
+  exit 1
+fi
+
 # Reject relative content_file paths -- artifact write expects an absolute path.
 if [[ "$CONTENT_FILE" != /* ]]; then
   echo "ERROR: CONTENT_FILE must be an absolute path: $CONTENT_FILE" >&2
@@ -93,6 +102,10 @@ fi
 # ── Step 4: Read proposal metadata ───────────────────────────────────────
 PROP_TYPE=$(yq '.type // ""' "$SOURCE_PROPOSAL_PATH")
 PROP_NAME=$(yq '.id // ""' "$SOURCE_PROPOSAL_PATH" | sed 's/^proposal-//; s/-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}$//')
+if ! validate_id "$PROP_NAME"; then
+  echo "ERROR: invalid PROP_NAME derived from proposal id (must match $_EVOLVE_ID_REGEX)" >&2
+  exit 1
+fi
 SRC_COUNT=$(yq '.source_instincts | length' "$SOURCE_PROPOSAL_PATH" 2>/dev/null || echo "0")
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -113,11 +126,7 @@ case "$PROP_TYPE" in
     DEST="$PROJECT_ROOT/.claude/rules/evolve-${PROP_NAME}.md"
     ;;
   memory)
-    # Sanitize project root path: strip leading /, replace remaining / with -
-    abs_root=$(cd "$PROJECT_ROOT" && pwd)
-    sanitized_path="${abs_root#/}"
-    sanitized_path="${sanitized_path//\//-}"
-    DEST="$HOME/.claude/projects/${sanitized_path}/memory/evolve-${PROP_NAME}.md"
+    DEST="$EVOLVE_DIR/projects/${PROJECT_ID}/memory/${PROP_NAME}.md"
     ;;
   *)
     echo "ERROR: unknown artifact type '$PROP_TYPE' (expected skill, rule, or memory)" >&2
@@ -129,7 +138,28 @@ if [[ $IS_RECOVERY -eq 1 && -f "$DEST" ]]; then
   evolve_log "INFO approve-proposal.sh: recovery mode -- artifact already at $DEST, skipping write"
 else
   # Suppress write-artifact.sh's stdout (DEST path) -- our stdout contract is "<type> <name>" only.
-  "$EVOLVE_DIR/scripts/write-artifact.sh" "$PROJECT_ROOT" "$PROP_TYPE" "$PROP_NAME" "$CONTENT_FILE" >/dev/null
+  "$EVOLVE_DIR/scripts/write-artifact.sh" "$PROJECT_ROOT" "$PROP_TYPE" "$PROP_NAME" "$CONTENT_FILE" "$PROJECT_ID" >/dev/null
+fi
+
+# ── Step 5b: Append memory index entry (top-level; idempotent on recovery) ──
+if [[ "$PROP_TYPE" == "memory" ]]; then
+  MEMORY_INDEX="$EVOLVE_DIR/projects/$PROJECT_ID/memory/index.yaml"
+  # MEMORY_INDEX is guaranteed to exist because init_project (line 31) created it.
+  EXISTING_ENTRY=$(yq ".memories[] | select(.id == \"${PROPOSAL_ID}\") | .id" "$MEMORY_INDEX" 2>/dev/null || true)
+  if [[ -z "$EXISTING_ENTRY" ]]; then
+    PROP_TITLE_ESC=$(yaml_escape_dq "$(yq '.title // ""' "$SOURCE_PROPOSAL_PATH")")
+    PROP_DESC_ESC=$(yaml_escape_dq "$(yq '.description // ""' "$SOURCE_PROPOSAL_PATH")")
+    tmp_midx=$(mktemp)
+    yq ".memories += [{
+      \"id\": \"${PROPOSAL_ID}\",
+      \"file\": \"${PROP_NAME}.md\",
+      \"title\": \"${PROP_TITLE_ESC}\",
+      \"description\": \"${PROP_DESC_ESC}\",
+      \"source_proposal\": \"${PROPOSAL_ID}\",
+      \"created\": \"${NOW}\"
+    }]" "$MEMORY_INDEX" > "$tmp_midx"
+    mv "$tmp_midx" "$MEMORY_INDEX"
+  fi
 fi
 
 # ── Step 6-10: Archive proposal (skip if recovery; already archived) ─────

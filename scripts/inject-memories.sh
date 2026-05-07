@@ -43,7 +43,7 @@ if [[ -s "$PROJECT_INDEX" ]]; then
       [[ -z "$MEM_ID" ]] && continue
       MEM_PATH="$PROJECT_MEM_DIR/$MEM_FILE"
       if [[ ! -f "$MEM_PATH" ]]; then
-        evolve_log "inject-memories.sh: index references missing file $MEM_PATH (project $PROJECT_ID); skipping"
+        evolve_log "WARN inject-memories.sh: index references missing file $MEM_PATH (project $PROJECT_ID); skipping"
         continue
       fi
       PROJECT_OUTPUT+="=== ${MEM_ID} ==="$'\n'
@@ -63,7 +63,7 @@ if [[ -s "$GLOBAL_INDEX" ]]; then
       [[ -z "$MEM_ID" ]] && continue
       MEM_PATH="$GLOBAL_MEM_DIR/$MEM_FILE"
       if [[ ! -f "$MEM_PATH" ]]; then
-        evolve_log "inject-memories.sh: index references missing file $MEM_PATH (global); skipping"
+        evolve_log "WARN inject-memories.sh: index references missing file $MEM_PATH (global); skipping"
         continue
       fi
       GLOBAL_OUTPUT+="=== ${MEM_ID} ==="$'\n'

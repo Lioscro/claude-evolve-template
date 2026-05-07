@@ -144,7 +144,7 @@ fi
 # ── Step 5b: Append memory index entry (top-level; idempotent on recovery) ──
 if [[ "$PROP_TYPE" == "memory" ]]; then
   MEMORY_INDEX="$EVOLVE_DIR/projects/$PROJECT_ID/memory/index.yaml"
-  # MEMORY_INDEX is guaranteed to exist because init_project (line 31) created it.
+  # MEMORY_INDEX is guaranteed to exist because init_project (above) created it.
   EXISTING_ENTRY=$(yq ".memories[] | select(.id == \"${PROPOSAL_ID}\") | .id" "$MEMORY_INDEX" 2>/dev/null || true)
   if [[ -z "$EXISTING_ENTRY" ]]; then
     PROP_TITLE_ESC=$(yaml_escape_dq "$(yq '.title // ""' "$SOURCE_PROPOSAL_PATH")")

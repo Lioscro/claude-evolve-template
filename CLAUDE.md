@@ -37,14 +37,17 @@ This project uses **mikefarah/yq v4** (Go version), not the Python `yq` wrapper.
 ### Hook Flow
 
 ```
-UserPromptSubmit  ->  inject-instincts.sh (stdout = additionalContext)
-                  ->  record-observation.sh (appends JSONL)
+UserPromptSubmit  ->  record-observation.sh (appends JSONL)
 PostToolUse       ->  record-observation.sh (appends JSONL, respects tool denylist)
-SessionStart      ->  on-session-start.sh:
-                        1. check-proposals.sh (sync, prints notification)
-                        2. observe.sh (backgrounded via nohup)
-                           -> observer agent -> create/reinforce instincts
-                           -> cluster.sh -> clusterer agent -> create proposals
+SessionStart      ->  matcher="startup":
+                        on-session-start.sh:
+                          1. check-proposals.sh (sync, prints notification)
+                          2. observe.sh (backgrounded via nohup)
+                             -> observer agent -> create/reinforce instincts
+                             -> cluster.sh -> clusterer agent -> create proposals
+                  ->  no matcher (fires on startup/resume/compact):
+                        inject-instincts.sh (stdout = additionalContext)
+                        inject-memories.sh  (stdout = additionalContext)
 Stop              ->  reinforce.sh (backgrounds reinforce-worker.sh)
                         -> reinforcer agent -> bump instinct confidence
 ```
@@ -61,6 +64,7 @@ Stop              ->  reinforce.sh (backgrounds reinforce-worker.sh)
 - **Observations**: JSONL files per session in `observations/`, archived after processing
 - **Instincts**: Individual YAML files in `instincts/`, tracked by `instincts/index.yaml`. Confidence floats between 0-1, decayed each observer run, bumped by reinforcement.
 - **Proposals**: Individual YAML files in `proposals/`, tracked by `proposals/index.yaml`. Created by clusterer when enough related instincts reach `min_confidence_for_clustering`.
+- **Memories**: Individual markdown files in `memory/`, tracked by `memory/index.yaml`. Created when a `type=memory` proposal is approved (`approve-proposal.sh` writes the artifact and appends to the index under the project lock). Project memories live at `data/projects/{project_id}/memory/{name}.md`; global memories live at `data/global/memory/global-{name}.md` (no automated global memory creation flow yet — directory exists for future use). Injected verbatim under `[claude-evolve] Active memories ...` headers on every `SessionStart` (startup, resume, compact); ALL memories are injected — no decay, no top-N filter.
 
 ### Agent Definitions
 
@@ -68,12 +72,16 @@ Agent `.md` files in `agents/` have YAML frontmatter (model, description) follow
 
 ### Confidence Lifecycle
 
-1. Created at `initial_confidence` (0.3)
-2. Reinforced by `reinforcement_increment` (0.15) when the reinforcer agent matches session behavior
-3. Decayed by `decay_per_run` (0.05) each observer run (floor: `decay_floor` 0.1)
+Defaults below; see `config.yaml` for current values (the parenthetical numbers reflect the committed defaults at the time of writing — keep `config.yaml` as the source of truth).
+
+1. Created at `initial_confidence` (0.5)
+2. Reinforced by `reinforcement_increment` (0.05) when the reinforcer agent matches session behavior. Capped at `max_confidence` (1).
+3. Decayed by `decay_per_run` (0.02) each observer run (floor: `decay_floor` 0)
 4. Injected into context when >= `injection_threshold` (0.5)
 5. Eligible for clustering when >= `min_confidence_for_clustering` (0.4)
 6. Archived when a proposal containing them is approved
+
+Global instincts have their own copies of `initial_confidence`, `reinforcement_increment`, `max_confidence`, `injection_threshold`, `decay_per_run`, and `decay_floor` under `global_instincts:` — they are tuned independently of project instincts.
 
 ### Rejection Overlap
 

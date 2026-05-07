@@ -23,7 +23,9 @@ level, and runs a closed feedback loop on top of every session:
    and a trigger) or reinforces existing ones.
 3. **Inject.** Mature instincts (those above a confidence threshold) are
    injected into the next session's context as additional guidance for
-   Claude.
+   Claude. Approved memory artifacts are also auto-injected at every
+   session start (startup, resume, after compact) — ALL of them, with no
+   filter and no decay.
 4. **Cluster.** Once enough related instincts mature, a clusterer agent
    groups them into a *proposal* — a draft skill, rule, or memory entry.
 5. **Approve.** You review pending proposals via the `/evolve` slash command
@@ -151,8 +153,16 @@ When proposals accumulate, run:
 ```
 
 Walk through each proposal and approve, reject, or skip. Approved
-proposals create real artifacts (skills under `~/.claude/skills/`, memory
-entries under your project's memory dir, etc.).
+proposals create real artifacts:
+- skills at `<project>/.claude/skills/evolve-{name}.md`,
+- rules at `<project>/.claude/rules/evolve-{name}.md`,
+- memories at `data/projects/{project_id}/memory/{name}.md` (in this repo,
+  alongside instincts and proposals — git-synced cross-machine, and
+  injected verbatim at every session start).
+
+(Note: `~/.claude/projects/{cwd}/memory/` files you may see on disk are
+Claude Code's *native* auto-memory feature — a separate system. evolve
+does not write there and won't touch those files.)
 
 To inspect system state without acting:
 

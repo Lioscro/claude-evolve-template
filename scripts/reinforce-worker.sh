@@ -95,10 +95,14 @@ AGENT_OUTPUT=$(echo "$AGENT_INPUT" | invoke_agent "$EVOLVE_DIR/agents/reinforcer
 }
 
 # ── Read config values ────────────────────────────────────────────────────
-REINFORCEMENT_INC=$(read_config '.instincts.reinforcement_increment // 0.15' "$PROJECT_ID" 2>/dev/null || echo "0.15")
-REINFORCEMENT_INC=$(validate_numeric "$REINFORCEMENT_INC" "$_NUMERIC_NONNEG_FLOAT" "0.15")
-MAX_CONFIDENCE=$(read_config '.instincts.max_confidence // 0.95' "$PROJECT_ID" 2>/dev/null || echo "0.95")
-MAX_CONFIDENCE=$(validate_numeric "$MAX_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "0.95")
+REINFORCEMENT_INC=$(read_config '.instincts.reinforcement_increment // 0.05' "$PROJECT_ID" 2>/dev/null || echo "0.05")
+REINFORCEMENT_INC=$(validate_numeric "$REINFORCEMENT_INC" "$_NUMERIC_NONNEG_FLOAT" "0.05")
+MAX_CONFIDENCE=$(read_config '.instincts.max_confidence // 1' "$PROJECT_ID" 2>/dev/null || echo "1")
+MAX_CONFIDENCE=$(validate_numeric "$MAX_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "1")
+GLOBAL_REINFORCEMENT_INC=$(read_config '.global_instincts.reinforcement_increment // 0.05' "$PROJECT_ID" 2>/dev/null || echo "0.05")
+GLOBAL_REINFORCEMENT_INC=$(validate_numeric "$GLOBAL_REINFORCEMENT_INC" "$_NUMERIC_NONNEG_FLOAT" "0.05")
+GLOBAL_MAX_CONFIDENCE=$(read_config '.global_instincts.max_confidence // 1' "$PROJECT_ID" 2>/dev/null || echo "1")
+GLOBAL_MAX_CONFIDENCE=$(validate_numeric "$GLOBAL_MAX_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "1")
 
 # ── Parse output: REINFORCE lines bump confidence, NONE = do nothing ──────
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -209,9 +213,9 @@ if [[ -n "$GLOBAL_REINFORCE_IDS" ]] && [[ -d "$GLOBAL_DIR" ]]; then
 
       # Bump confidence (capped)
       CURRENT_CONF=$(yq '.confidence // 0' "$GFILE" 2>/dev/null || echo "0")
-      NEW_CONF=$(bc_calc "$CURRENT_CONF + $REINFORCEMENT_INC")
-      if (( $(echo "$NEW_CONF > $MAX_CONFIDENCE" | bc -l) )); then
-        NEW_CONF="$MAX_CONFIDENCE"
+      NEW_CONF=$(bc_calc "$CURRENT_CONF + $GLOBAL_REINFORCEMENT_INC")
+      if (( $(echo "$NEW_CONF > $GLOBAL_MAX_CONFIDENCE" | bc -l) )); then
+        NEW_CONF="$GLOBAL_MAX_CONFIDENCE"
       fi
 
       # Increment observation_count

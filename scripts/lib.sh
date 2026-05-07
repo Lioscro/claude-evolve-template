@@ -200,7 +200,9 @@ init_project() {
     "$project_dir/instincts" \
     "$project_dir/instincts/archived" \
     "$project_dir/proposals" \
-    "$project_dir/proposals/archived"
+    "$project_dir/proposals/archived" \
+    "$project_dir/memory" \
+    "$project_dir/memory/archived"
 
   # Write versioned empty index files if they don't exist
   if [[ ! -f "$project_dir/instincts/index.yaml" ]]; then
@@ -230,6 +232,20 @@ version: 1
 proposals: []
 YAML
   fi
+
+  if [[ ! -f "$project_dir/memory/index.yaml" ]]; then
+    cat > "$project_dir/memory/index.yaml" <<'YAML'
+version: 1
+memories: []
+YAML
+  fi
+
+  if [[ ! -f "$project_dir/memory/archived/index.yaml" ]]; then
+    cat > "$project_dir/memory/archived/index.yaml" <<'YAML'
+version: 1
+memories: []
+YAML
+  fi
 }
 
 # ── Global initialization ──────────────────────────────────────────────────
@@ -250,7 +266,9 @@ init_global() {
     "$GLOBAL_DIR/instincts" \
     "$GLOBAL_DIR/instincts/archived" \
     "$GLOBAL_DIR/proposals" \
-    "$GLOBAL_DIR/proposals/archived"
+    "$GLOBAL_DIR/proposals/archived" \
+    "$GLOBAL_DIR/memory" \
+    "$GLOBAL_DIR/memory/archived"
 
   if [[ ! -f "$GLOBAL_DIR/instincts/index.yaml" ]]; then
     cat > "$GLOBAL_DIR/instincts/index.yaml" <<'YAML'
@@ -278,6 +296,20 @@ YAML
     cat > "$GLOBAL_DIR/proposals/archived/index.yaml" <<'YAML'
 version: 1
 proposals: []
+YAML
+  fi
+
+  if [[ ! -f "$GLOBAL_DIR/memory/index.yaml" ]]; then
+    cat > "$GLOBAL_DIR/memory/index.yaml" <<'YAML'
+version: 1
+memories: []
+YAML
+  fi
+
+  if [[ ! -f "$GLOBAL_DIR/memory/archived/index.yaml" ]]; then
+    cat > "$GLOBAL_DIR/memory/archived/index.yaml" <<'YAML'
+version: 1
+memories: []
 YAML
   fi
 }

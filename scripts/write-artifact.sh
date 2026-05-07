@@ -12,6 +12,7 @@ PROJECT_ROOT="${1:?write-artifact.sh requires PROJECT_ROOT as \$1}"
 TYPE="${2:?write-artifact.sh requires TYPE (skill/rule/memory) as \$2}"
 NAME="${3:?write-artifact.sh requires NAME as \$3}"
 CONTENT_FILE="${4:?write-artifact.sh requires CONTENT_FILE as \$4}"
+PROJECT_ID="${5:?write-artifact.sh requires PROJECT_ID as \$5}"
 
 if [[ ! -f "$CONTENT_FILE" ]]; then
   echo "ERROR: content file $CONTENT_FILE does not exist" >&2
@@ -29,12 +30,7 @@ case "$TYPE" in
     DEST="$PROJECT_ROOT/.claude/rules/evolve-${NAME}.md"
     ;;
   memory)
-    # Sanitize project root path: strip leading /, replace remaining / with -
-    local_abs=$(cd "$PROJECT_ROOT" && pwd)
-    sanitized_path="${local_abs#/}"
-    sanitized_path="${sanitized_path//\//-}"
-    MEMORY_DIR="$HOME/.claude/projects/${sanitized_path}/memory"
-    DEST="$MEMORY_DIR/evolve-${NAME}.md"
+    DEST="$EVOLVE_DIR/projects/${PROJECT_ID}/memory/${NAME}.md"
     ;;
   *)
     echo "ERROR: unknown artifact type '$TYPE' (expected skill, rule, or memory)" >&2
@@ -55,12 +51,6 @@ mkdir -p "$(dirname "$DEST")"
 
 # ── Write content ─────────────────────────────────────────────────────────
 cp "$CONTENT_FILE" "$DEST"
-
-# ── For memory type, append entry to MEMORY.md ────────────────────────────
-if [[ "$TYPE" == "memory" ]]; then
-  MEMORY_MD="$(dirname "$DEST")/MEMORY.md"
-  echo "- [evolve-${NAME}](evolve-${NAME}.md) — added by claude-evolve" >> "$MEMORY_MD"
-fi
 
 evolve_log "write-artifact.sh: wrote $TYPE artifact to $DEST"
 echo "$DEST"

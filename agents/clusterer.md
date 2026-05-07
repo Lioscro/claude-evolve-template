@@ -34,7 +34,7 @@ proposed_content: |
   {the full content of the skill/rule/memory file}
   {for skills: include frontmatter with description field}
   {for rules: write as clear, actionable directives}
-  {for memory: write as factual statements with context}
+  {for memory: write as plain markdown body — NO YAML frontmatter}
 ```
 
 If no coherent groupings can be formed, output exactly: `NONE`
@@ -48,8 +48,15 @@ If no coherent groupings can be formed, output exactly: `NONE`
   constraints, or things to always/never do. The proposed_content should be
   clear directives.
 - **MEMORY**: The instincts describe factual context about the project, user
-  preferences, or environment details. The proposed_content should include
-  memory frontmatter (name, description, type fields).
+  preferences, or environment details. The proposed_content should be plain
+  markdown — **do not include YAML frontmatter** (the `name`, `title`, and
+  `description` you emit at the proposal level are tracked in `memory/index.yaml`
+  on approval; duplicating them inside the file is redundant noise that gets
+  re-injected verbatim on every session start). Memory artifacts are written
+  to `data/projects/{project_id}/memory/{name}.md` and ALL memory files are
+  injected into Claude's context on every session start (startup, resume, after
+  compact) — no decay, no top-N filter — so the body should be self-contained
+  factual context that does not assume prior session knowledge.
 
 ## Grouping guidelines
 

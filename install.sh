@@ -201,7 +201,8 @@ EVOLVE_HOOKS='
         {"type": "command", "command": "~/.claude/evolve/scripts/on-session-start.sh"}
       ]},
       {"hooks": [
-        {"type": "command", "command": "~/.claude/evolve/scripts/inject-instincts.sh"}
+        {"type": "command", "command": "~/.claude/evolve/scripts/inject-instincts.sh"},
+        {"type": "command", "command": "~/.claude/evolve/scripts/inject-memories.sh"}
       ]}
     ]
   }
@@ -279,7 +280,7 @@ PARTIAL_WARN=$(jq -r '
     if $event == "UserPromptSubmit" then ["record-observation.sh"]
     elif $event == "PostToolUse" then ["record-observation.sh"]
     elif $event == "Stop" then ["reinforce.sh"]
-    elif $event == "SessionStart" then ["on-session-start.sh", "inject-instincts.sh"]
+    elif $event == "SessionStart" then ["on-session-start.sh", "inject-instincts.sh", "inject-memories.sh"]
     else [] end;
 
   (.hooks // {}) as $h |

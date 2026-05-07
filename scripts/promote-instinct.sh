@@ -44,8 +44,8 @@ GLOBAL_INSTINCT_INDEX="$GLOBAL_INSTINCT_DIR/index.yaml"
 GLOBAL_LOCK="$GLOBAL_DIR/global.lock"
 
 # ── Read config ──────────────────────────────────────────────────────────
-GLOBAL_INITIAL_CONFIDENCE=$(read_config '.global_instincts.initial_confidence // 0.6' 2>/dev/null || echo "0.6")
-GLOBAL_INITIAL_CONFIDENCE=$(validate_numeric "$GLOBAL_INITIAL_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "0.6")
+GLOBAL_INITIAL_CONFIDENCE=$(read_config '.global_instincts.initial_confidence // 0.5' 2>/dev/null || echo "0.5")
+GLOBAL_INITIAL_CONFIDENCE=$(validate_numeric "$GLOBAL_INITIAL_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "0.5")
 MIN_GROUPING_SIZE=$(read_config '.clustering.min_grouping_size // 2' 2>/dev/null || echo "2")
 MIN_GROUPING_SIZE=$(validate_numeric "$MIN_GROUPING_SIZE" "$_NUMERIC_NONNEG_INT" "2")
 

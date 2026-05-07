@@ -1,13 +1,13 @@
 observer:
   enabled: true
 instincts:
-  initial_confidence: 0.3
-  reinforcement_increment: 0.15
-  max_confidence: 0.95
+  initial_confidence: 0.5
+  reinforcement_increment: 0.05
+  max_confidence: 1
   injection_threshold: 0.5
   max_injected: 10
-  decay_per_run: 0.05
-  decay_floor: 0.1
+  decay_per_run: 0.02
+  decay_floor: 0
 clustering:
   domain_threshold: 5
   min_confidence_for_clustering: 0.4
@@ -17,10 +17,13 @@ global_instincts:
   enabled: true
   auto_promote_threshold: 3
   propose_promote_threshold: 2
-  initial_confidence: 0.6
-  decay_per_run: 0.03
-  decay_floor: 0.1
-  max_injected: 5
+  initial_confidence: 0.5
+  reinforcement_increment: 0.05
+  max_confidence: 1
+  injection_threshold: 0.5
+  decay_per_run: 0.02
+  decay_floor: 0
+  max_injected: 10
 observations:
   max_tool_response_length: 500
   max_observations_per_run: 200

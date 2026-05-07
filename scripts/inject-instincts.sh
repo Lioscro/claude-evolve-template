@@ -84,8 +84,8 @@ fi
 GLOBAL_OUTPUT=""
 GLOBAL_INDEX="$GLOBAL_DIR/instincts/index.yaml"
 if [[ -s "$GLOBAL_INDEX" ]]; then
-  GLOBAL_MAX_INJECTED=$(read_config '.global_instincts.max_injected // 5' "$PROJECT_ID" 2>/dev/null || echo "5")
-  GLOBAL_MAX_INJECTED=$(validate_numeric "$GLOBAL_MAX_INJECTED" "$_NUMERIC_NONNEG_INT" "5")
+  GLOBAL_MAX_INJECTED=$(read_config '.global_instincts.max_injected // 10' "$PROJECT_ID" 2>/dev/null || echo "10")
+  GLOBAL_MAX_INJECTED=$(validate_numeric "$GLOBAL_MAX_INJECTED" "$_NUMERIC_NONNEG_INT" "10")
   GLOBAL_INJECTION_THRESHOLD=$(read_config '.global_instincts.injection_threshold // 0.5' "$PROJECT_ID" 2>/dev/null || echo "0.5")
   GLOBAL_INJECTION_THRESHOLD=$(validate_numeric "$GLOBAL_INJECTION_THRESHOLD" "$_NUMERIC_NONNEG_FLOAT" "0.5")
 

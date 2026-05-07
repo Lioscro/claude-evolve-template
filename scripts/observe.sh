@@ -81,16 +81,16 @@ fi
 # ── Read config values ─────────────────────────────────────────────────────
 MAX_OBS=$(read_config '.observations.max_observations_per_run // 200' "$PROJECT_ID" 2>/dev/null || echo "200")
 MAX_OBS=$(validate_numeric "$MAX_OBS" "$_NUMERIC_NONNEG_INT" "200")
-INITIAL_CONFIDENCE=$(read_config '.instincts.initial_confidence // 0.3' "$PROJECT_ID" 2>/dev/null || echo "0.3")
-INITIAL_CONFIDENCE=$(validate_numeric "$INITIAL_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "0.3")
-REINFORCEMENT_INC=$(read_config '.instincts.reinforcement_increment // 0.15' "$PROJECT_ID" 2>/dev/null || echo "0.15")
-REINFORCEMENT_INC=$(validate_numeric "$REINFORCEMENT_INC" "$_NUMERIC_NONNEG_FLOAT" "0.15")
-MAX_CONFIDENCE=$(read_config '.instincts.max_confidence // 0.95' "$PROJECT_ID" 2>/dev/null || echo "0.95")
-MAX_CONFIDENCE=$(validate_numeric "$MAX_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "0.95")
-DECAY_PER_RUN=$(read_config '.instincts.decay_per_run // 0.05' "$PROJECT_ID" 2>/dev/null || echo "0.05")
-DECAY_PER_RUN=$(validate_numeric "$DECAY_PER_RUN" "$_NUMERIC_NONNEG_FLOAT" "0.05")
-DECAY_FLOOR=$(read_config '.instincts.decay_floor // 0.1' "$PROJECT_ID" 2>/dev/null || echo "0.1")
-DECAY_FLOOR=$(validate_numeric "$DECAY_FLOOR" "$_NUMERIC_NONNEG_FLOAT" "0.1")
+INITIAL_CONFIDENCE=$(read_config '.instincts.initial_confidence // 0.5' "$PROJECT_ID" 2>/dev/null || echo "0.5")
+INITIAL_CONFIDENCE=$(validate_numeric "$INITIAL_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "0.5")
+REINFORCEMENT_INC=$(read_config '.instincts.reinforcement_increment // 0.05' "$PROJECT_ID" 2>/dev/null || echo "0.05")
+REINFORCEMENT_INC=$(validate_numeric "$REINFORCEMENT_INC" "$_NUMERIC_NONNEG_FLOAT" "0.05")
+MAX_CONFIDENCE=$(read_config '.instincts.max_confidence // 1' "$PROJECT_ID" 2>/dev/null || echo "1")
+MAX_CONFIDENCE=$(validate_numeric "$MAX_CONFIDENCE" "$_NUMERIC_NONNEG_FLOAT" "1")
+DECAY_PER_RUN=$(read_config '.instincts.decay_per_run // 0.02' "$PROJECT_ID" 2>/dev/null || echo "0.02")
+DECAY_PER_RUN=$(validate_numeric "$DECAY_PER_RUN" "$_NUMERIC_NONNEG_FLOAT" "0.02")
+DECAY_FLOOR=$(read_config '.instincts.decay_floor // 0' "$PROJECT_ID" 2>/dev/null || echo "0")
+DECAY_FLOOR=$(validate_numeric "$DECAY_FLOOR" "$_NUMERIC_NONNEG_FLOAT" "0")
 
 # ── Concatenate observations (with batching) ───────────────────────────────
 # Build parallel arrays: ALL_LINES holds line content, LINE_FILE_IDX holds the

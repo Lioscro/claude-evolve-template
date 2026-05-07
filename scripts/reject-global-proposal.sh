@@ -10,6 +10,11 @@ trap 'evolve_log "ERROR ${BASH_SOURCE[0]##*/}:$LINENO (exit $?)"' ERR
 # ── Arguments ──────────────────────────────────────────────────────────────
 PROPOSAL_ID="${1:?reject-global-proposal.sh requires PROPOSAL_ID as \$1}"
 
+if ! validate_id "$PROPOSAL_ID"; then
+  echo "ERROR: invalid PROPOSAL_ID (must match $_EVOLVE_ID_REGEX): $PROPOSAL_ID" >&2
+  exit 1
+fi
+
 # Parse --permanent flag
 PERMANENT=0
 if [[ "${2:-}" == "--permanent" ]]; then
@@ -63,6 +68,9 @@ if [[ ! -f "$PROPOSAL_PATH" ]]; then
   exit 1
 fi
 
+# ── Read actual type from proposal file (not hardcoded) ──────────────────
+PROP_TYPE=$(yq '.type // ""' "$PROPOSAL_PATH")
+
 # ── Determine status ─────────────────────────────────────────────────────
 if [[ "$PERMANENT" -eq 1 ]]; then
   STATUS="permanently_rejected"
@@ -71,6 +79,7 @@ else
 fi
 
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+PROP_DOMAIN=$(yq '.domain // "unknown"' "$PROPOSAL_PATH" 2>/dev/null || echo "unknown")
 
 # ── Update proposal status ────────────────────────────────────────────────
 tmp_prop=$(mktemp)
@@ -88,32 +97,63 @@ tmp_idx=$(mktemp)
 yq ".proposals = [.proposals[] | select(.id != \"${PROPOSAL_ID}\")]" "$PROPOSAL_INDEX" > "$tmp_idx"
 mv "$tmp_idx" "$PROPOSAL_INDEX"
 
-# ── Read metadata from archived proposal for index entry ─────────────────
-PROP_DOMAIN=$(yq '.domain // "unknown"' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "unknown")
-SRC_PROJECT_COUNT=$(yq '.source_project_count // 0' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
-
-# Read source_project_instincts for archived index entry (needed for Jaccard overlap check)
-SPI_COUNT=$(yq '.source_project_instincts | length' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
-SPI_ARCHIVED_YAML=""
-for ((i=0; i<SPI_COUNT; i++)); do
-  proj=$(yq ".source_project_instincts[$i].project" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
-  inst=$(yq ".source_project_instincts[$i].instinct" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
-  SPI_ARCHIVED_YAML+="{\"project\": \"${proj}\", \"instinct\": \"${inst}\"}, "
-done
-SPI_ARCHIVED_YAML="${SPI_ARCHIVED_YAML%, }"
-
 # ── Add to proposals/archived/index.yaml (atomic write) ──────────────────
+# Schema is type-discriminated:
+# - type=memory uses source_global_instincts / source_global_instinct_count
+# - type=promotion uses source_project_* (existing shape)
+# This divergence is intentional: promote.sh's Jaccard scan reads
+# source_project_instincts and silently no-ops on memory entries, so memory
+# entries in the archived index never produce false-positive promotion blocks.
 tmp_arch=$(mktemp)
-yq ".proposals += [{
-  \"id\": \"${PROPOSAL_ID}\",
-  \"type\": \"promotion\",
-  \"domain\": \"${PROP_DOMAIN}\",
-  \"status\": \"${STATUS}\",
-  \"resolved_at\": \"${NOW}\",
-  \"source_project_count\": ${SRC_PROJECT_COUNT},
-  \"source_project_instincts\": [${SPI_ARCHIVED_YAML}],
-  \"file\": \"${PROPOSAL_FILE}\"
-}]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
+case "$PROP_TYPE" in
+  memory)
+    # Read source_global_instincts for archived index entry.
+    # Default to [] and count 0 if not present (defensive).
+    SGI_COUNT=$(yq '.source_global_instincts | length' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
+    SGI_ARCHIVED_YAML=""
+    for ((i=0; i<SGI_COUNT; i++)); do
+      sgi=$(yq ".source_global_instincts[$i]" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
+      SGI_ARCHIVED_YAML+="\"${sgi}\", "
+    done
+    SGI_ARCHIVED_YAML="${SGI_ARCHIVED_YAML%, }"
+
+    yq ".proposals += [{
+      \"id\": \"${PROPOSAL_ID}\",
+      \"type\": \"memory\",
+      \"domain\": \"${PROP_DOMAIN}\",
+      \"status\": \"${STATUS}\",
+      \"resolved_at\": \"${NOW}\",
+      \"source_global_instincts\": [${SGI_ARCHIVED_YAML}],
+      \"source_global_instinct_count\": ${SGI_COUNT},
+      \"file\": \"${PROPOSAL_FILE}\"
+    }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
+    ;;
+  promotion|*)
+    # For promotion (and unknown types): keep existing source_project_* shape.
+    SRC_PROJECT_COUNT=$(yq '.source_project_count // 0' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
+
+    # Read source_project_instincts for archived index entry (needed for Jaccard overlap check)
+    SPI_COUNT=$(yq '.source_project_instincts | length' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
+    SPI_ARCHIVED_YAML=""
+    for ((i=0; i<SPI_COUNT; i++)); do
+      proj=$(yq ".source_project_instincts[$i].project" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
+      inst=$(yq ".source_project_instincts[$i].instinct" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
+      SPI_ARCHIVED_YAML+="{\"project\": \"${proj}\", \"instinct\": \"${inst}\"}, "
+    done
+    SPI_ARCHIVED_YAML="${SPI_ARCHIVED_YAML%, }"
+
+    yq ".proposals += [{
+      \"id\": \"${PROPOSAL_ID}\",
+      \"type\": \"${PROP_TYPE}\",
+      \"domain\": \"${PROP_DOMAIN}\",
+      \"status\": \"${STATUS}\",
+      \"resolved_at\": \"${NOW}\",
+      \"source_project_count\": ${SRC_PROJECT_COUNT},
+      \"source_project_instincts\": [${SPI_ARCHIVED_YAML}],
+      \"file\": \"${PROPOSAL_FILE}\"
+    }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
+    ;;
+esac
 mv "$tmp_arch" "$PROPOSAL_ARCHIVED_INDEX"
 
 # ── Release lock ──────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ trap 'evolve_log "ERROR ${BASH_SOURCE[0]##*/}:$LINENO (exit $?)"' ERR
 
 # ── Step 1: Argument validation ──────────────────────────────────────────
 if [[ $# -ne 4 ]]; then
-  echo "Usage: approve-proposal.sh PROJECT_ID PROPOSAL_ID PROJECT_ROOT CONTENT_FILE" >&2
+  echo "Usage: approve-proposal.sh PROJECT_ID PROPOSAL_ID PROJECT_ROOT CONTENT_FILE  (PROJECT_ROOT may be \"\" when proposal type is memory)" >&2
   exit 1
 fi
 PROJECT_ID="$1"
@@ -70,13 +70,23 @@ for ((i=0; i<PROPOSAL_COUNT; i++)); do
 done
 
 IS_RECOVERY=0
+MID_ARCHIVAL=0
 SOURCE_PROPOSAL_PATH=""
 if [[ -n "$PROPOSAL_FILE" ]]; then
   SOURCE_PROPOSAL_PATH="$PROPOSALS_DIR/$PROPOSAL_FILE"
   if [[ ! -f "$SOURCE_PROPOSAL_PATH" ]]; then
-    evolve_log "approve-proposal.sh: live index references missing file $SOURCE_PROPOSAL_PATH"
-    echo "ERROR: proposal file $SOURCE_PROPOSAL_PATH does not exist" >&2
-    exit 1
+    # Mid-archival recovery: the proposal file may have already been moved to the archived dir
+    # by a prior partial run (crash between file-move and index-rewrite). Fall through to use
+    # the archived copy instead of erroring.
+    if [[ -f "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" ]]; then
+      MID_ARCHIVAL=1
+      SOURCE_PROPOSAL_PATH="$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE"
+      evolve_log "INFO approve-proposal.sh: mid-archival recovery -- file already in archived dir"
+    else
+      evolve_log "approve-proposal.sh: live index references missing file $SOURCE_PROPOSAL_PATH"
+      echo "ERROR: proposal file $SOURCE_PROPOSAL_PATH does not exist" >&2
+      exit 1
+    fi
   fi
 else
   # R16: fall back to archived index for recovery from prior partial-failure
@@ -120,9 +130,11 @@ done
 DEST=""
 case "$PROP_TYPE" in
   skill)
+    [[ -n "$PROJECT_ROOT" ]] || { echo "ERROR: PROJECT_ROOT required for type=$PROP_TYPE" >&2; exit 1; }
     DEST="$PROJECT_ROOT/.claude/skills/evolve-${PROP_NAME}.md"
     ;;
   rule)
+    [[ -n "$PROJECT_ROOT" ]] || { echo "ERROR: PROJECT_ROOT required for type=$PROP_TYPE" >&2; exit 1; }
     DEST="$PROJECT_ROOT/.claude/rules/evolve-${PROP_NAME}.md"
     ;;
   memory)
@@ -134,10 +146,15 @@ case "$PROP_TYPE" in
     ;;
 esac
 
-if [[ $IS_RECOVERY -eq 1 && -f "$DEST" ]]; then
-  evolve_log "INFO approve-proposal.sh: recovery mode -- artifact already at $DEST, skipping write"
+# Read auto_approve_target AFTER the mid-archival recovery branch (SOURCE_PROPOSAL_PATH is now set
+# to the active path -- either live or archived).
+AUTO_TARGET=$(yq '.auto_approve_target // false' "$SOURCE_PROPOSAL_PATH")
+
+if [[ -f "$DEST" ]] && [[ $IS_RECOVERY -eq 1 || $MID_ARCHIVAL -eq 1 || "$AUTO_TARGET" == "true" ]]; then
+  evolve_log "INFO approve-proposal.sh: artifact already at $DEST, skipping write (recovery, mid-archival, or auto-resume)"
 else
   # Suppress write-artifact.sh's stdout (DEST path) -- our stdout contract is "<type> <name>" only.
+  # Note: no --scope flag here; project memory uses the default scope (legacy 5-positional form).
   "$EVOLVE_DIR/scripts/write-artifact.sh" "$PROJECT_ROOT" "$PROP_TYPE" "$PROP_NAME" "$CONTENT_FILE" "$PROJECT_ID" >/dev/null
 fi
 
@@ -164,43 +181,49 @@ fi
 
 # ── Step 6-10: Archive proposal (skip if recovery; already archived) ─────
 if [[ $IS_RECOVERY -eq 0 ]]; then
-  # Update proposal status
-  tmp_prop=$(mktemp)
-  yq "
-    .status = \"approved\" |
-    .resolved_at = \"${NOW}\"
-  " "$SOURCE_PROPOSAL_PATH" > "$tmp_prop"
+  if [[ $MID_ARCHIVAL -eq 0 ]]; then
+    # Update proposal status
+    tmp_prop=$(mktemp)
+    yq "
+      .status = \"approved\" |
+      .resolved_at = \"${NOW}\"
+    " "$SOURCE_PROPOSAL_PATH" > "$tmp_prop"
 
-  # Move to archived/
-  mv "$tmp_prop" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE"
-  rm -f "$SOURCE_PROPOSAL_PATH"
+    # Move to archived/
+    mv "$tmp_prop" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE"
+    rm -f "$SOURCE_PROPOSAL_PATH"
+  fi
 
-  # Remove from live proposals/index.yaml (rewrite pattern)
+  # Remove from live proposals/index.yaml (rewrite pattern) -- always run (mid-archival
+  # crash leaves the live index still referencing the proposal).
   tmp_idx=$(mktemp)
   yq ".proposals = [.proposals[] | select(.id != \"${PROPOSAL_ID}\")]" "$PROPOSAL_INDEX" > "$tmp_idx"
   mv "$tmp_idx" "$PROPOSAL_INDEX"
 
-  # Append to archived proposals index
-  PROP_DOMAIN=$(yq '.domain // "unknown"' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "unknown")
-  SRC_INSTINCT_YAML=""
-  # Guarded array expansion -- bash 3.2 + set -u trips on "${SRC_IDS[@]}" when array is empty.
-  for src_id in ${SRC_IDS[@]+"${SRC_IDS[@]}"}; do
-    SRC_INSTINCT_YAML+="\"${src_id}\", "
-  done
-  SRC_INSTINCT_YAML="${SRC_INSTINCT_YAML%, }"
+  # Append to archived proposals index (idempotent: skip if entry already present).
+  ALREADY_ARCH=$(yq "[.proposals[] | select(.id == \"${PROPOSAL_ID}\")] | length" "$PROPOSAL_ARCHIVED_INDEX" 2>/dev/null || echo "0")
+  if [[ "$ALREADY_ARCH" -eq 0 ]]; then
+    PROP_DOMAIN=$(yq '.domain // "unknown"' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "unknown")
+    SRC_INSTINCT_YAML=""
+    # Guarded array expansion -- bash 3.2 + set -u trips on "${SRC_IDS[@]}" when array is empty.
+    for src_id in ${SRC_IDS[@]+"${SRC_IDS[@]}"}; do
+      SRC_INSTINCT_YAML+="\"${src_id}\", "
+    done
+    SRC_INSTINCT_YAML="${SRC_INSTINCT_YAML%, }"
 
-  tmp_arch=$(mktemp)
-  yq ".proposals += [{
-    \"id\": \"${PROPOSAL_ID}\",
-    \"type\": \"${PROP_TYPE}\",
-    \"domain\": \"${PROP_DOMAIN}\",
-    \"status\": \"approved\",
-    \"resolved_at\": \"${NOW}\",
-    \"source_instincts\": [${SRC_INSTINCT_YAML}],
-    \"source_instinct_count\": ${SRC_COUNT},
-    \"file\": \"${PROPOSAL_FILE}\"
-  }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
-  mv "$tmp_arch" "$PROPOSAL_ARCHIVED_INDEX"
+    tmp_arch=$(mktemp)
+    yq ".proposals += [{
+      \"id\": \"${PROPOSAL_ID}\",
+      \"type\": \"${PROP_TYPE}\",
+      \"domain\": \"${PROP_DOMAIN}\",
+      \"status\": \"approved\",
+      \"resolved_at\": \"${NOW}\",
+      \"source_instincts\": [${SRC_INSTINCT_YAML}],
+      \"source_instinct_count\": ${SRC_COUNT},
+      \"file\": \"${PROPOSAL_FILE}\"
+    }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
+    mv "$tmp_arch" "$PROPOSAL_ARCHIVED_INDEX"
+  fi
 fi
 
 # ── Step 11: Archive each source instinct (idempotent) ───────────────────

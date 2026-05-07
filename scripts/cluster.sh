@@ -263,6 +263,10 @@ process_document() {
     evolve_log "WARN cluster.sh: skipping document with invalid type='$type' (name=$name)"
     return
   fi
+  if [[ "$type" == "memory" ]]; then
+    evolve_log "WARN cluster.sh: ignoring memory proposal from clusterer (name=$name)"
+    return
+  fi
   while IFS= read -r _sid; do
     [[ -z "$_sid" ]] && continue
     if ! validate_id "$_sid"; then

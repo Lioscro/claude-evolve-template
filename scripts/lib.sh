@@ -331,7 +331,11 @@ invoke_agent() {
   local frontmatter
   frontmatter="$(sed -n '/^---$/,/^---$/p' "$agent_file")"
   local model
-  model="$(echo "$frontmatter" | yq '.model // "claude-haiku-4-5"' | head -1)"
+  if [[ -n "${EVOLVE_AGENT_MODEL_OVERRIDE:-}" ]]; then
+    model="$EVOLVE_AGENT_MODEL_OVERRIDE"
+  else
+    model="$(echo "$frontmatter" | yq '.model // "claude-haiku-4-5"' | head -1)"
+  fi
 
   # Strip frontmatter (everything between first --- and second ---), write body to temp file
   # If file doesn't start with ---, copy entire file as-is.
@@ -348,6 +352,142 @@ invoke_agent() {
     --system-prompt-file "$tmp_system" \
     --model "$model" \
     --no-session-persistence
+}
+
+# ── Blocking lock acquisition ───────────────────────────────────────────────
+# acquire_lock_blocking <lock_file> [timeout_seconds]
+# Like acquire_lock but blocks up to timeout_seconds (default 30) instead of
+# returning immediately on contention. Uses fd 9 (same slot as acquire_lock);
+# release_lock works for both.
+
+acquire_lock_blocking() {
+  local lock_file="$1"
+  local timeout="${2:-30}"
+  exec 9>"$lock_file"
+  flock -w "$timeout" 9 || return 1
+  echo $$ >&9
+}
+
+# ── archive_proposal() ──────────────────────────────────────────────────────
+# archive_proposal <proposal_file_path> <archive_dir> <archived_index_path> <live_index_path> <new_status>
+#
+# Moves a pending proposal to its archived directory, removes it from the live
+# index, and appends an 8-field entry to the archived index. Idempotent:
+# recovery branch detects already-moved files; index updates self-heal on re-run.
+# Caller is responsible for holding the appropriate lock before calling.
+#
+# Returns 0 on success or recovery. Returns 1 only if the proposal is missing
+# from both the live path and the archived path.
+
+archive_proposal() {
+  local proposal_file_path="$1"
+  local archive_dir="$2"
+  local archived_index_path="$3"
+  local live_index_path="$4"
+  local new_status="$5"
+
+  local basename_file
+  basename_file="$(basename "$proposal_file_path")"
+  local archived_path="$archive_dir/$basename_file"
+
+  local resolved_at
+  resolved_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if [[ ! -f "$proposal_file_path" ]]; then
+    # Recovery branch: source file already moved to archived path by a prior partial run.
+    if [[ -f "$archived_path" ]]; then
+      evolve_log "INFO archive_proposal: recovery -- $basename_file already at archived path, skipping file move"
+      # Fall through to index updates using the already-archived file.
+    else
+      # Missing from both paths.
+      evolve_log "ERROR archive_proposal: proposal not found at $proposal_file_path or $archived_path"
+      return 1
+    fi
+  else
+    # Normal branch: write status+resolved_at to temp file, mv to archived, rm original.
+    local tmp_prop
+    tmp_prop="$(mktemp)"
+    yq "
+      .status = \"${new_status}\" |
+      .resolved_at = \"${resolved_at}\"
+    " "$proposal_file_path" > "$tmp_prop"
+    mv "$tmp_prop" "$archived_path"
+    rm -f "$proposal_file_path"
+  fi
+
+  # Read proposal_id from archived copy.
+  local proposal_id
+  proposal_id="$(yq '.id // ""' "$archived_path")"
+  if [[ -z "$proposal_id" ]]; then
+    proposal_id="${basename_file%.yaml}"
+    evolve_log "WARN archive_proposal: .id missing from $basename_file; falling back to filename: $proposal_id"
+  fi
+
+  # Read source_instincts array from archived copy.
+  local src_count
+  src_count="$(yq '.source_instincts | length' "$archived_path" 2>/dev/null || echo "0")"
+  local src_instincts=()
+  for ((i=0; i<src_count; i++)); do
+    src_instincts+=("$(yq ".source_instincts[$i]" "$archived_path")")
+  done
+
+  # Build comma-separated quoted YAML list of source instinct ids (bash 3.2 safe).
+  local src_instinct_yaml=""
+  for si in ${src_instincts[@]+"${src_instincts[@]}"}; do
+    src_instinct_yaml+="\"${si}\", "
+  done
+  src_instinct_yaml="${src_instinct_yaml%, }"
+
+  # Read type and domain from archived copy.
+  local prop_type
+  prop_type="$(yq '.type // ""' "$archived_path")"
+  local prop_domain
+  prop_domain="$(yq '.domain // "unknown"' "$archived_path")"
+
+  # Atomic-rewrite live index removing the proposal entry by id.
+  if [[ -f "$live_index_path" ]]; then
+    local tmp_live
+    tmp_live="$(mktemp)"
+    if ! yq ".proposals = [.proposals[] | select(.id != \"${proposal_id}\")]" "$live_index_path" > "$tmp_live"; then
+      evolve_log "ERROR archive_proposal: failed to rewrite live index for $proposal_id (continuing)"
+      rm -f "$tmp_live"
+    else
+      mv "$tmp_live" "$live_index_path"
+    fi
+  fi
+
+  # Idempotency guard: check if archived index already has this entry.
+  if [[ -f "$archived_index_path" ]]; then
+    local already_count
+    already_count="$(yq "[.proposals[] | select(.id == \"${proposal_id}\")] | length" "$archived_index_path" 2>/dev/null || echo "0")"
+    if [[ "$already_count" -gt 0 ]]; then
+      evolve_log "INFO archive_proposal: archived index already has entry for $proposal_id; skipping append"
+      return 0
+    fi
+  fi
+
+  # Atomic-append to archived index with the 8-field shape.
+  if [[ -f "$archived_index_path" ]]; then
+    local tmp_arch
+    tmp_arch="$(mktemp)"
+    if ! yq ".proposals += [{
+      \"id\": \"${proposal_id}\",
+      \"type\": \"${prop_type}\",
+      \"domain\": \"${prop_domain}\",
+      \"status\": \"${new_status}\",
+      \"resolved_at\": \"${resolved_at}\",
+      \"source_instincts\": [${src_instinct_yaml}],
+      \"source_instinct_count\": ${src_count},
+      \"file\": \"${basename_file}\"
+    }]" "$archived_index_path" > "$tmp_arch"; then
+      evolve_log "ERROR archive_proposal: failed to append to archived index for $proposal_id (continuing)"
+      rm -f "$tmp_arch"
+    else
+      mv "$tmp_arch" "$archived_index_path"
+    fi
+  fi
+
+  return 0
 }
 
 # ── Locking ─────────────────────────────────────────────────────────────────

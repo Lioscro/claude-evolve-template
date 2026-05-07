@@ -30,7 +30,7 @@ PROJECT_ID=$(resolve_project "$CWD")
 INDEX_FILE="$EVOLVE_DIR/projects/$PROJECT_ID/instincts/index.yaml"
 INSTINCTS_DIR="$EVOLVE_DIR/projects/$PROJECT_ID/instincts"
 
-# Read config thresholds (used by both project and global sections)
+# Read project injection threshold (global threshold is read inside the global section)
 INJECTION_THRESHOLD=$(read_config '.instincts.injection_threshold // 0.5' "$PROJECT_ID" 2>/dev/null || echo "0.5")
 INJECTION_THRESHOLD=$(validate_numeric "$INJECTION_THRESHOLD" "$_NUMERIC_NONNEG_FLOAT" "0.5")
 TAB=$'\t'
@@ -86,6 +86,8 @@ GLOBAL_INDEX="$GLOBAL_DIR/instincts/index.yaml"
 if [[ -s "$GLOBAL_INDEX" ]]; then
   GLOBAL_MAX_INJECTED=$(read_config '.global_instincts.max_injected // 5' "$PROJECT_ID" 2>/dev/null || echo "5")
   GLOBAL_MAX_INJECTED=$(validate_numeric "$GLOBAL_MAX_INJECTED" "$_NUMERIC_NONNEG_INT" "5")
+  GLOBAL_INJECTION_THRESHOLD=$(read_config '.global_instincts.injection_threshold // 0.5' "$PROJECT_ID" 2>/dev/null || echo "0.5")
+  GLOBAL_INJECTION_THRESHOLD=$(validate_numeric "$GLOBAL_INJECTION_THRESHOLD" "$_NUMERIC_NONNEG_FLOAT" "0.5")
 
   GLOBAL_COUNT=$(yq '.instincts | length' "$GLOBAL_INDEX" 2>/dev/null || echo "0")
   if [[ "$GLOBAL_COUNT" -gt 0 ]]; then
@@ -95,7 +97,7 @@ if [[ -s "$GLOBAL_INDEX" ]]; then
       GLOBAL_CANDIDATES=""
       while IFS=$'\t' read -r CONF _TRIGGER _FILE; do
         [[ -z "$CONF" ]] && continue
-        if (( $(echo "$CONF >= $INJECTION_THRESHOLD" | bc -l) )); then
+        if (( $(echo "$CONF >= $GLOBAL_INJECTION_THRESHOLD" | bc -l) )); then
           GLOBAL_CANDIDATES+="${CONF}${TAB}${_TRIGGER}${TAB}${_FILE}"$'\n'
         fi
       done <<< "$ALL_GLOBAL"

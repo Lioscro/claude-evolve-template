@@ -109,6 +109,14 @@ Global instincts have their own copies of `initial_confidence`, `reinforcement_i
 
 **Placement in observe.sh**: graduate.sh runs after promote.sh (so it sees post-decay, post-promotion confidence values) and before the final `evolve_git_push`.
 
+**Proposal id format**: graduate.sh produces ids with an epoch (Unix seconds) suffix, not a date suffix, to ensure uniqueness across same-day preempt cycles:
+- Project: `proposal-{name}-{epoch}` — e.g. `proposal-foo-1714895723`
+- Global: `global-proposal-{name}-memory-{epoch}` — e.g. `global-proposal-foo-memory-1714895723`
+
+The `{epoch}` is the 10-digit Unix timestamp captured once at script start (`EPOCH_NOW=$(date -u +%s)`), so all proposals from a single run share the same suffix. The human-readable date is recoverable from the `created` field in the proposal yaml (ISO-8601 UTC).
+
+Note: `approve-proposal.sh` reads `PROP_NAME` from the proposal yaml's `.name` field (not by stripping the id suffix), so it works correctly for both epoch-suffix and legacy date-suffix ids.
+
 #### Memory graduation rejection-overlap policy
 
 Unlike the Jaccard-based overlap check for clusterer proposals, graduate.sh uses strict single-instinct matching:
@@ -126,10 +134,19 @@ Moves a pending proposal to its archived directory, rewrites both the live and a
 
 Signature:
 ```
-archive_proposal <proposal_file_path> <archive_dir> <archived_index_path> <live_index_path> <new_status>
+archive_proposal <proposal_file> <proposal_id> <archive_dir> <archived_index> <live_index> <new_status> [--scope global]
 ```
 
-Called from `reject-proposal.sh` and `graduate.sh` (for `superseded_by_auto` archival). The caller must hold the appropriate lock (`evolve.lock` for project, `global.lock` for global). The helper is idempotent: if the source file is already at the archive path (crash-recovery scenario), it skips the move and repairs the indexes.
+- `proposal_id` is now an explicit argument (previously was read from yaml `.id` with a filename-based fallback that produced wrong ids for cluster-created proposals whose filename is `{name}-{type}.yaml` but whose id is `proposal-{name}-{date}`).
+- `--scope global` enables global-scope archival with type-dispatched archived-index schema:
+  - `scope=project` (any type): `source_instincts: [<flat strings>]` + `source_instinct_count: <length>`
+  - `scope=global, type=memory`: `source_global_instincts: [<flat strings>]` + `source_global_instinct_count: <length>`
+  - `scope=global, type=promotion`: `source_project_instincts: [<{project, instinct} objects>]` + `source_project_count: <scalar read from proposal yaml>` (the count scalar is read directly from `.source_project_count`, not computed as array length, because they may legitimately diverge)
+  - `scope=global, type=<unknown>`: 6-field entry (`id`, `file`, `type`, `domain`, `status`, `resolved_at`) with no `source_*` field; WARN logged
+- Returns 0 on success or recovery (crash-recovery: source already at archive path, indexes self-heal). Returns 1 if proposal is missing from both live and archived paths. Returns 2 on invalid `new_status`.
+- `new_status` must be one of `approved|rejected|permanently_rejected|superseded_by_auto`; any other value returns 2 (defends against accidental arg shift).
+
+Called from `reject-proposal.sh`, `reject-global-proposal.sh`, and `graduate.sh` (for `superseded_by_auto` archival). The caller must hold the appropriate lock (`evolve.lock` for project, `global.lock` for global). `approve-proposal.sh` and `approve-global-proposal.sh` keep their own inline archival logic (they have richer outer state — IS_RECOVERY/MID_ARCHIVAL/artifact-write/instinct-archival — that does not fit the helper).
 
 #### `acquire_lock_blocking()`
 

@@ -342,6 +342,7 @@ process_document() {
   cat > "$PROPOSALS_DIR/$proposal_file" <<YAML
 version: 1
 id: ${proposal_id}
+name: ${name}
 type: ${type}
 domain: ${domain}
 created: "${NOW}"

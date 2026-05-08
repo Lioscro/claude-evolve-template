@@ -62,14 +62,6 @@ if [[ -z "$PROPOSAL_FILE" ]]; then
 fi
 
 PROPOSAL_PATH="$PROPOSALS_DIR/$PROPOSAL_FILE"
-if [[ ! -f "$PROPOSAL_PATH" ]]; then
-  evolve_log "reject-global-proposal.sh: proposal file $PROPOSAL_PATH does not exist"
-  echo "ERROR: proposal file $PROPOSAL_PATH does not exist" >&2
-  exit 1
-fi
-
-# ── Read actual type from proposal file (not hardcoded) ──────────────────
-PROP_TYPE=$(yq '.type // ""' "$PROPOSAL_PATH")
 
 # ── Determine status ─────────────────────────────────────────────────────
 if [[ "$PERMANENT" -eq 1 ]]; then
@@ -78,83 +70,20 @@ else
   STATUS="rejected"
 fi
 
-NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-PROP_DOMAIN=$(yq '.domain // "unknown"' "$PROPOSAL_PATH" 2>/dev/null || echo "unknown")
-
-# ── Update proposal status ────────────────────────────────────────────────
-tmp_prop=$(mktemp)
-yq "
-  .status = \"${STATUS}\" |
-  .resolved_at = \"${NOW}\"
-" "$PROPOSAL_PATH" > "$tmp_prop"
-
-# ── Move proposal to archived/ ───────────────────────────────────────────
-mv "$tmp_prop" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE"
-rm -f "$PROPOSAL_PATH"
-
-# ── Update proposals/index.yaml (atomic write) ───────────────────────────
-tmp_idx=$(mktemp)
-yq ".proposals = [.proposals[] | select(.id != \"${PROPOSAL_ID}\")]" "$PROPOSAL_INDEX" > "$tmp_idx"
-mv "$tmp_idx" "$PROPOSAL_INDEX"
-
-# ── Add to proposals/archived/index.yaml (atomic write) ──────────────────
-# Schema is type-discriminated:
-# - type=memory uses source_global_instincts / source_global_instinct_count
-# - type=promotion uses source_project_* (existing shape)
-# This divergence is intentional: promote.sh's Jaccard scan reads
-# source_project_instincts and silently no-ops on memory entries, so memory
-# entries in the archived index never produce false-positive promotion blocks.
-tmp_arch=$(mktemp)
-case "$PROP_TYPE" in
-  memory)
-    # Read source_global_instincts for archived index entry.
-    # Default to [] and count 0 if not present (defensive).
-    SGI_COUNT=$(yq '.source_global_instincts | length' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
-    SGI_ARCHIVED_YAML=""
-    for ((i=0; i<SGI_COUNT; i++)); do
-      sgi=$(yq ".source_global_instincts[$i]" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
-      SGI_ARCHIVED_YAML+="\"${sgi}\", "
-    done
-    SGI_ARCHIVED_YAML="${SGI_ARCHIVED_YAML%, }"
-
-    yq ".proposals += [{
-      \"id\": \"${PROPOSAL_ID}\",
-      \"type\": \"memory\",
-      \"domain\": \"${PROP_DOMAIN}\",
-      \"status\": \"${STATUS}\",
-      \"resolved_at\": \"${NOW}\",
-      \"source_global_instincts\": [${SGI_ARCHIVED_YAML}],
-      \"source_global_instinct_count\": ${SGI_COUNT},
-      \"file\": \"${PROPOSAL_FILE}\"
-    }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
-    ;;
-  promotion|*)
-    # For promotion (and unknown types): keep existing source_project_* shape.
-    SRC_PROJECT_COUNT=$(yq '.source_project_count // 0' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
-
-    # Read source_project_instincts for archived index entry (needed for Jaccard overlap check)
-    SPI_COUNT=$(yq '.source_project_instincts | length' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
-    SPI_ARCHIVED_YAML=""
-    for ((i=0; i<SPI_COUNT; i++)); do
-      proj=$(yq ".source_project_instincts[$i].project" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
-      inst=$(yq ".source_project_instincts[$i].instinct" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
-      SPI_ARCHIVED_YAML+="{\"project\": \"${proj}\", \"instinct\": \"${inst}\"}, "
-    done
-    SPI_ARCHIVED_YAML="${SPI_ARCHIVED_YAML%, }"
-
-    yq ".proposals += [{
-      \"id\": \"${PROPOSAL_ID}\",
-      \"type\": \"${PROP_TYPE}\",
-      \"domain\": \"${PROP_DOMAIN}\",
-      \"status\": \"${STATUS}\",
-      \"resolved_at\": \"${NOW}\",
-      \"source_project_count\": ${SRC_PROJECT_COUNT},
-      \"source_project_instincts\": [${SPI_ARCHIVED_YAML}],
-      \"file\": \"${PROPOSAL_FILE}\"
-    }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
-    ;;
-esac
-mv "$tmp_arch" "$PROPOSAL_ARCHIVED_INDEX"
+# ── Archive proposal via shared helper ───────────────────────────────────
+# Deliberate semantics shift: the prior code exited 1 when the live proposal
+# file was missing (lines 65-69 in the original). The helper's recovery branch
+# instead self-heals by re-syncing the indexes against the already-archived file.
+# This is the correct behavior for an interrupted prior run.
+arch_rc=0
+archive_proposal "$PROPOSAL_PATH" "$PROPOSAL_ID" \
+  "$PROPOSAL_ARCHIVED_DIR" "$PROPOSAL_ARCHIVED_INDEX" \
+  "$PROPOSAL_INDEX" "$STATUS" --scope global || arch_rc=$?
+if [[ "$arch_rc" -ne 0 ]]; then
+  evolve_log "reject-global-proposal.sh: archive_proposal failed (rc=$arch_rc) for $PROPOSAL_ID"
+  echo "ERROR: archive_proposal failed for $PROPOSAL_ID" >&2
+  exit 1
+fi
 
 # ── Release lock ──────────────────────────────────────────────────────────
 release_lock "$GLOBAL_LOCK"

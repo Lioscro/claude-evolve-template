@@ -60,7 +60,7 @@ else
   STATUS="rejected"
 fi
 
-if ! archive_proposal "$PROPOSAL_PATH" "$PROPOSAL_ARCHIVED_DIR" "$PROPOSAL_ARCHIVED_INDEX" "$PROPOSAL_INDEX" "$STATUS"; then
+if ! archive_proposal "$PROPOSAL_PATH" "$PROPOSAL_ID" "$PROPOSAL_ARCHIVED_DIR" "$PROPOSAL_ARCHIVED_INDEX" "$PROPOSAL_INDEX" "$STATUS"; then
   evolve_log "reject-proposal.sh: archive_proposal failed for $PROPOSAL_ID"
   echo "ERROR: proposal file $PROPOSAL_PATH does not exist (not in live or archive)" >&2
   exit 1

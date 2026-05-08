@@ -117,6 +117,8 @@ case "$PROP_TYPE" in
 
     # Extract instinct ID from proposal ID (strip "global-proposal-" prefix and date suffix).
     # Confined here because this derivation is only correct for promotion proposals.
+    # NOTE: this sed stays as-is because promotion proposals are produced by promote.sh,
+    # which still emits -YYYY-MM-DD suffixes. Only graduate.sh switched to epoch suffixes.
     INST_ID=$(echo "$PROPOSAL_ID" | sed 's/^global-proposal-//; s/-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}$//')
 
     # ── Build temp file for promote-instinct.sh ──────────────────────────
@@ -183,7 +185,8 @@ ENDYAML
 
     # ── Idempotent artifact write ─────────────────────────────────────────
     # Skip the write if the artifact already exists AND this is a recovery or auto-resume run.
-    if [[ -f "$DEST" ]] && [[ $IS_RECOVERY -eq 1 || $MID_ARCHIVAL -eq 1 || "$AUTO_TARGET" == "true" ]]; then
+    # Use -e (not -f) to handle symlinks correctly -- matches approve-proposal.sh:157.
+    if [[ -e "$DEST" ]] && [[ $IS_RECOVERY -eq 1 || $MID_ARCHIVAL -eq 1 || "$AUTO_TARGET" == "true" ]]; then
       evolve_log "INFO approve-global-proposal.sh: artifact already at $DEST, skipping write (recovery or auto-resume)"
     else
       # Write proposed_content to a temp file and call write-artifact.sh.
@@ -341,75 +344,111 @@ if [[ $IS_RECOVERY -eq 0 ]]; then
   yq ".proposals = [.proposals[] | select(.id != \"${PROPOSAL_ID}\")]" "$PROPOSAL_INDEX" > "$tmp_idx"
   mv "$tmp_idx" "$PROPOSAL_INDEX"
 
-  # ── Add to proposals/archived/index.yaml (atomic write, idempotent) ──────
+  # ── Add to proposals/archived/index.yaml (status-aware idempotency dispatch) ──
   # Schema is type-discriminated:
   # - type=memory uses source_global_instincts / source_global_instinct_count
   # - type=promotion uses source_project_* (existing shape)
   # This divergence is intentional: promote.sh's Jaccard scan reads
   # source_project_instincts and silently no-ops on memory entries, so memory
   # entries in the archived index never produce false-positive promotion blocks.
-  ALREADY_ARCH=$(yq "[.proposals[] | select(.id == \"${PROPOSAL_ID}\")] | length" "$PROPOSAL_ARCHIVED_INDEX" 2>/dev/null || echo "0")
-  if [[ "$ALREADY_ARCH" -gt 0 ]]; then
-    evolve_log "INFO approve-global-proposal.sh: archived index already has entry for $PROPOSAL_ID; skipping append"
-  else
-    tmp_arch=$(mktemp)
-    case "$PROP_TYPE" in
-      memory)
-        # Build source_global_instincts JSON array for the archived index entry.
-        SGI_ARCHIVED_YAML=""
-        for ((i=0; i<SGI_COUNT; i++)); do
-          sgi=$(yq ".source_global_instincts[$i]" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
-          SGI_ARCHIVED_YAML+="\"${sgi}\", "
-        done
-        SGI_ARCHIVED_YAML="${SGI_ARCHIVED_YAML%, }"
+  EXISTING_STATUS=$(yq ".proposals[] | select(.id == \"${PROPOSAL_ID}\") | .status" "$PROPOSAL_ARCHIVED_INDEX" 2>/dev/null || echo "")
+  case "$EXISTING_STATUS" in
+    "")
+      # Normal path: no existing archived entry -- append with status=approved.
+      tmp_arch=$(mktemp)
+      case "$PROP_TYPE" in
+        memory)
+          # Build source_global_instincts JSON array for the archived index entry.
+          SGI_ARCHIVED_YAML=""
+          for ((i=0; i<SGI_COUNT; i++)); do
+            sgi=$(yq ".source_global_instincts[$i]" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
+            SGI_ARCHIVED_YAML+="\"${sgi}\", "
+          done
+          SGI_ARCHIVED_YAML="${SGI_ARCHIVED_YAML%, }"
 
-        yq ".proposals += [{
-          \"id\": \"${PROPOSAL_ID}\",
-          \"type\": \"memory\",
-          \"domain\": \"${PROP_DOMAIN}\",
-          \"status\": \"approved\",
-          \"resolved_at\": \"${NOW}\",
-          \"source_global_instincts\": [${SGI_ARCHIVED_YAML}],
-          \"source_global_instinct_count\": ${SGI_COUNT},
-          \"file\": \"${PROPOSAL_FILE}\"
-        }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
-        ;;
-      promotion)
-        SRC_PROJECT_COUNT=$(yq '.source_project_count // 0' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
+          yq ".proposals += [{
+            \"id\": \"${PROPOSAL_ID}\",
+            \"type\": \"memory\",
+            \"domain\": \"${PROP_DOMAIN}\",
+            \"status\": \"approved\",
+            \"resolved_at\": \"${NOW}\",
+            \"source_global_instincts\": [${SGI_ARCHIVED_YAML}],
+            \"source_global_instinct_count\": ${SGI_COUNT},
+            \"file\": \"${PROPOSAL_FILE}\"
+          }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
+          ;;
+        promotion)
+          SRC_PROJECT_COUNT=$(yq '.source_project_count // 0' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "0")
 
-        SPI_ARCHIVED_YAML=""
-        for ((i=0; i<SPI_COUNT; i++)); do
-          proj=$(yq ".source_project_instincts[$i].project" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
-          inst=$(yq ".source_project_instincts[$i].instinct" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
-          SPI_ARCHIVED_YAML+="{\"project\": \"${proj}\", \"instinct\": \"${inst}\"}, "
-        done
-        SPI_ARCHIVED_YAML="${SPI_ARCHIVED_YAML%, }"
+          SPI_ARCHIVED_YAML=""
+          for ((i=0; i<SPI_COUNT; i++)); do
+            proj=$(yq ".source_project_instincts[$i].project" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
+            inst=$(yq ".source_project_instincts[$i].instinct" "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "")
+            SPI_ARCHIVED_YAML+="{\"project\": \"${proj}\", \"instinct\": \"${inst}\"}, "
+          done
+          SPI_ARCHIVED_YAML="${SPI_ARCHIVED_YAML%, }"
 
-        yq ".proposals += [{
-          \"id\": \"${PROPOSAL_ID}\",
-          \"type\": \"${PROP_TYPE}\",
-          \"domain\": \"${PROP_DOMAIN}\",
-          \"status\": \"approved\",
-          \"resolved_at\": \"${NOW}\",
-          \"source_project_count\": ${SRC_PROJECT_COUNT},
-          \"source_project_instincts\": [${SPI_ARCHIVED_YAML}],
-          \"file\": \"${PROPOSAL_FILE}\"
-        }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
-        ;;
-      *)
-        # Unknown type: write a minimal archived entry.
-        yq ".proposals += [{
-          \"id\": \"${PROPOSAL_ID}\",
-          \"type\": \"${PROP_TYPE}\",
-          \"domain\": \"${PROP_DOMAIN}\",
-          \"status\": \"approved\",
-          \"resolved_at\": \"${NOW}\",
-          \"file\": \"${PROPOSAL_FILE}\"
-        }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
-        ;;
-    esac
-    mv "$tmp_arch" "$PROPOSAL_ARCHIVED_INDEX"
-  fi
+          yq ".proposals += [{
+            \"id\": \"${PROPOSAL_ID}\",
+            \"type\": \"${PROP_TYPE}\",
+            \"domain\": \"${PROP_DOMAIN}\",
+            \"status\": \"approved\",
+            \"resolved_at\": \"${NOW}\",
+            \"source_project_count\": ${SRC_PROJECT_COUNT},
+            \"source_project_instincts\": [${SPI_ARCHIVED_YAML}],
+            \"file\": \"${PROPOSAL_FILE}\"
+          }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
+          ;;
+        *)
+          # Unknown type: write a minimal archived entry.
+          yq ".proposals += [{
+            \"id\": \"${PROPOSAL_ID}\",
+            \"type\": \"${PROP_TYPE}\",
+            \"domain\": \"${PROP_DOMAIN}\",
+            \"status\": \"approved\",
+            \"resolved_at\": \"${NOW}\",
+            \"file\": \"${PROPOSAL_FILE}\"
+          }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
+          ;;
+      esac
+      mv "$tmp_arch" "$PROPOSAL_ARCHIVED_INDEX"
+      ;;
+    superseded_by_auto)
+      # Legacy collision: a same-day auto-tier preempt wrote this entry as
+      # superseded_by_auto before Phase 3 per-tick ids were in place.
+      # Rewrite the archived entry's status to approved and update resolved_at.
+      RESOLVED_AT_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      tmp_arch_idx=$(mktemp "${PROPOSAL_ARCHIVED_INDEX}.XXXXXX")
+      if yq "(.proposals[] | select(.id == \"${PROPOSAL_ID}\")) |= (.status = \"approved\" | .resolved_at = \"${RESOLVED_AT_NOW}\")" \
+             "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch_idx" 2>/dev/null; then
+        if [[ ! -s "$tmp_arch_idx" ]]; then
+          rm -f "$tmp_arch_idx"
+          evolve_log "ERROR approve-global-proposal.sh: yq produced empty rewrite for archived index"
+          exit 1
+        fi
+        mv "$tmp_arch_idx" "$PROPOSAL_ARCHIVED_INDEX"
+        evolve_log "INFO approve-global-proposal.sh: upgraded archived entry $PROPOSAL_ID from superseded_by_auto to approved"
+      else
+        rm -f "$tmp_arch_idx"
+        evolve_log "ERROR approve-global-proposal.sh: yq rewrite failed for $PROPOSAL_ID"
+        exit 1
+      fi
+      ;;
+    approved)
+      evolve_log "INFO approve-global-proposal.sh: idempotent re-run for $PROPOSAL_ID (already approved)"
+      # Archived index unchanged.
+      ;;
+    rejected|permanently_rejected)
+      evolve_log "WARN approve-global-proposal.sh: cannot approve $PROPOSAL_ID with archived status=$EXISTING_STATUS; halting"
+      echo "ERROR: cannot approve already-rejected proposal $PROPOSAL_ID" >&2
+      exit 1
+      ;;
+    *)
+      evolve_log "WARN approve-global-proposal.sh: unknown archived status='$EXISTING_STATUS' for $PROPOSAL_ID; halting"
+      echo "ERROR: unknown archived status" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # ── Release lock ──────────────────────────────────────────────────────────

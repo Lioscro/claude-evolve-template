@@ -18,9 +18,8 @@ PROJECT_ROOT="$3"
 CONTENT_FILE="$4"
 
 # Validate PROPOSAL_ID -- it flows into yq query strings throughout this script.
-# (PROP_NAME is also validated below, but it's derived from PROPOSAL_ID via sed
-# stripping, so a malformed PROPOSAL_ID could pass the PROP_NAME check after
-# sanitization. Validate the source.)
+# (PROP_NAME is also validated below; it is read from the proposal yaml's .name
+# field, not derived from PROPOSAL_ID. Validate PROPOSAL_ID independently.)
 if ! validate_id "$PROPOSAL_ID"; then
   echo "ERROR: invalid PROPOSAL_ID (must match $_EVOLVE_ID_REGEX): $PROPOSAL_ID" >&2
   exit 1
@@ -111,9 +110,14 @@ fi
 
 # ── Step 4: Read proposal metadata ───────────────────────────────────────
 PROP_TYPE=$(yq '.type // ""' "$SOURCE_PROPOSAL_PATH")
-PROP_NAME=$(yq '.id // ""' "$SOURCE_PROPOSAL_PATH" | sed 's/^proposal-//; s/-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}$//')
+PROP_NAME=$(yq '.name // ""' "$SOURCE_PROPOSAL_PATH" 2>/dev/null || echo "")
+if [[ -z "$PROP_NAME" ]]; then
+  evolve_log "ERROR approve-proposal.sh: .name missing from $SOURCE_PROPOSAL_PATH"
+  echo "ERROR: .name missing from proposal yaml" >&2
+  exit 1
+fi
 if ! validate_id "$PROP_NAME"; then
-  echo "ERROR: invalid PROP_NAME derived from proposal id (must match $_EVOLVE_ID_REGEX)" >&2
+  echo "ERROR: invalid PROP_NAME derived from proposal .name (must match $_EVOLVE_ID_REGEX)" >&2
   exit 1
 fi
 SRC_COUNT=$(yq '.source_instincts | length' "$SOURCE_PROPOSAL_PATH" 2>/dev/null || echo "0")
@@ -150,7 +154,7 @@ esac
 # to the active path -- either live or archived).
 AUTO_TARGET=$(yq '.auto_approve_target // false' "$SOURCE_PROPOSAL_PATH")
 
-if [[ -f "$DEST" ]] && [[ $IS_RECOVERY -eq 1 || $MID_ARCHIVAL -eq 1 || "$AUTO_TARGET" == "true" ]]; then
+if [[ -e "$DEST" ]] && [[ $IS_RECOVERY -eq 1 || $MID_ARCHIVAL -eq 1 || "$AUTO_TARGET" == "true" ]]; then
   evolve_log "INFO approve-proposal.sh: artifact already at $DEST, skipping write (recovery, mid-archival, or auto-resume)"
 else
   # Suppress write-artifact.sh's stdout (DEST path) -- our stdout contract is "<type> <name>" only.
@@ -200,30 +204,68 @@ if [[ $IS_RECOVERY -eq 0 ]]; then
   yq ".proposals = [.proposals[] | select(.id != \"${PROPOSAL_ID}\")]" "$PROPOSAL_INDEX" > "$tmp_idx"
   mv "$tmp_idx" "$PROPOSAL_INDEX"
 
-  # Append to archived proposals index (idempotent: skip if entry already present).
-  ALREADY_ARCH=$(yq "[.proposals[] | select(.id == \"${PROPOSAL_ID}\")] | length" "$PROPOSAL_ARCHIVED_INDEX" 2>/dev/null || echo "0")
-  if [[ "$ALREADY_ARCH" -eq 0 ]]; then
-    PROP_DOMAIN=$(yq '.domain // "unknown"' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "unknown")
-    SRC_INSTINCT_YAML=""
-    # Guarded array expansion -- bash 3.2 + set -u trips on "${SRC_IDS[@]}" when array is empty.
-    for src_id in ${SRC_IDS[@]+"${SRC_IDS[@]}"}; do
-      SRC_INSTINCT_YAML+="\"${src_id}\", "
-    done
-    SRC_INSTINCT_YAML="${SRC_INSTINCT_YAML%, }"
+  # Append to archived proposals index (status-aware idempotency dispatch).
+  EXISTING_STATUS=$(yq ".proposals[] | select(.id == \"${PROPOSAL_ID}\") | .status" "$PROPOSAL_ARCHIVED_INDEX" 2>/dev/null || echo "")
+  case "$EXISTING_STATUS" in
+    "")
+      # Normal path: no existing archived entry -- append with status=approved.
+      PROP_DOMAIN=$(yq '.domain // "unknown"' "$PROPOSAL_ARCHIVED_DIR/$PROPOSAL_FILE" 2>/dev/null || echo "unknown")
+      SRC_INSTINCT_YAML=""
+      # Guarded array expansion -- bash 3.2 + set -u trips on "${SRC_IDS[@]}" when array is empty.
+      for src_id in ${SRC_IDS[@]+"${SRC_IDS[@]}"}; do
+        SRC_INSTINCT_YAML+="\"${src_id}\", "
+      done
+      SRC_INSTINCT_YAML="${SRC_INSTINCT_YAML%, }"
 
-    tmp_arch=$(mktemp)
-    yq ".proposals += [{
-      \"id\": \"${PROPOSAL_ID}\",
-      \"type\": \"${PROP_TYPE}\",
-      \"domain\": \"${PROP_DOMAIN}\",
-      \"status\": \"approved\",
-      \"resolved_at\": \"${NOW}\",
-      \"source_instincts\": [${SRC_INSTINCT_YAML}],
-      \"source_instinct_count\": ${SRC_COUNT},
-      \"file\": \"${PROPOSAL_FILE}\"
-    }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
-    mv "$tmp_arch" "$PROPOSAL_ARCHIVED_INDEX"
-  fi
+      tmp_arch=$(mktemp)
+      yq ".proposals += [{
+        \"id\": \"${PROPOSAL_ID}\",
+        \"type\": \"${PROP_TYPE}\",
+        \"domain\": \"${PROP_DOMAIN}\",
+        \"status\": \"approved\",
+        \"resolved_at\": \"${NOW}\",
+        \"source_instincts\": [${SRC_INSTINCT_YAML}],
+        \"source_instinct_count\": ${SRC_COUNT},
+        \"file\": \"${PROPOSAL_FILE}\"
+      }]" "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch"
+      mv "$tmp_arch" "$PROPOSAL_ARCHIVED_INDEX"
+      ;;
+    superseded_by_auto)
+      # Legacy collision: a same-day auto-tier preempt wrote this entry as
+      # superseded_by_auto before Phase 3 per-tick ids were in place.
+      # Rewrite the archived entry's status to approved and update resolved_at.
+      RESOLVED_AT_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      tmp_arch_idx=$(mktemp "${PROPOSAL_ARCHIVED_INDEX}.XXXXXX")
+      if yq "(.proposals[] | select(.id == \"${PROPOSAL_ID}\")) |= (.status = \"approved\" | .resolved_at = \"${RESOLVED_AT_NOW}\")" \
+             "$PROPOSAL_ARCHIVED_INDEX" > "$tmp_arch_idx" 2>/dev/null; then
+        if [[ ! -s "$tmp_arch_idx" ]]; then
+          rm -f "$tmp_arch_idx"
+          evolve_log "ERROR approve-proposal.sh: yq produced empty rewrite for archived index"
+          exit 1
+        fi
+        mv "$tmp_arch_idx" "$PROPOSAL_ARCHIVED_INDEX"
+        evolve_log "INFO approve-proposal.sh: upgraded archived entry $PROPOSAL_ID from superseded_by_auto to approved"
+      else
+        rm -f "$tmp_arch_idx"
+        evolve_log "ERROR approve-proposal.sh: yq rewrite failed for $PROPOSAL_ID"
+        exit 1
+      fi
+      ;;
+    approved)
+      evolve_log "INFO approve-proposal.sh: idempotent re-run for $PROPOSAL_ID (already approved)"
+      # Archived index unchanged.
+      ;;
+    rejected|permanently_rejected)
+      evolve_log "WARN approve-proposal.sh: cannot approve $PROPOSAL_ID with archived status=$EXISTING_STATUS; halting"
+      echo "ERROR: cannot approve already-rejected proposal $PROPOSAL_ID" >&2
+      exit 1
+      ;;
+    *)
+      evolve_log "WARN approve-proposal.sh: unknown archived status='$EXISTING_STATUS' for $PROPOSAL_ID; halting"
+      echo "ERROR: unknown archived status" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # ── Step 11: Archive each source instinct (idempotent) ───────────────────

@@ -55,6 +55,13 @@ G_auto_completed=0
 # Resume-pre-pass tracker (any approve calls during resume scan)
 RESUME_CALLS=0
 
+# ── Per-run epoch timestamp (used in proposal ids to ensure uniqueness) ───
+# Captured once per graduate.sh invocation so all proposals from a single run
+# share the same epoch suffix. Within-run uniqueness is guaranteed structurally:
+# the candidate loop dedupes by instinct id (each instinct produces at most one
+# proposal per run). Cross-run uniqueness is guaranteed by distinct epoch seconds.
+EPOCH_NOW=$(date -u +%s)
+
 # ── Helper: rebuild candidates after lock reacquire ───────────────────────
 # Reads filtered candidates (pending instinct ids and archived single-instinct
 # memory rejection ids) from a freshly read index. Used to drop newly-blocked
@@ -81,6 +88,7 @@ read_pending_memory_instinct_ids() {
     pid_inst=$(yq ".${src_field}[0] // \"\"" "$pp" 2>/dev/null || echo "")
     [[ -n "$pid_inst" ]] && printf '%s\n' "$pid_inst"
   done
+  return 0
 }
 
 # read_pending_memory_proposal_for_instinct <proposal_index_path> <proposals_dir> <instinct_id> <src_field> <count_field>
@@ -106,6 +114,7 @@ read_pending_memory_proposal_for_instinct() {
       return 0
     fi
   done
+  return 0
 }
 
 # read_archived_memory_block_ids <archived_index_path> <src_field> <count_field>
@@ -130,6 +139,7 @@ read_archived_memory_block_ids() {
     pid_inst=$(yq ".proposals[$i].${src_field}[0] // \"\"" "$idx" 2>/dev/null || echo "")
     [[ -n "$pid_inst" ]] && printf '%s\n' "$pid_inst"
   done
+  return 0
 }
 
 # read_skipped_buffer <sidecar_path>
@@ -145,6 +155,7 @@ read_skipped_buffer() {
     sconf=$(yq ".skipped[$i].skipped_at_confidence // 0" "$sc" 2>/dev/null || echo "0")
     [[ -n "$sid" ]] && printf '%s\t%s\n' "$sid" "$sconf"
   done
+  return 0
 }
 
 # ── Resume-orphans pre-pass per scope ──────────────────────────────────────
@@ -176,64 +187,104 @@ resume_orphans() {
   trap "release_lock \"$lock_file\"" EXIT
 
   # ── Index scan ───────────────────────────────────────────────────────────
+  # Phase A: collect orphan ids while holding the lock.
+  # Iterate by position once (no release/reacquire here) to gather ids.
+  # Phase B then iterates by id with release/reacquire per orphan, avoiding
+  # the index-shift bug where position-based iteration skips every other entry
+  # after the live index shrinks on each successful approve.
   local index_clean=1
+  local orphan_ids=() pcount prop_id is_auto i
   if [[ -f "$proposal_index" ]]; then
-    local pcount
     pcount=$(yq '.proposals | length' "$proposal_index" 2>/dev/null || echo "0")
-    local i prop_id prop_file prop_path prop_aat prop_aattempts content_file
     for ((i=0; i<pcount; i++)); do
-      prop_id=$(yq ".proposals[$i].id // \"\"" "$proposal_index" 2>/dev/null || echo "")
-      prop_file=$(yq ".proposals[$i].file // \"\"" "$proposal_index" 2>/dev/null || echo "")
-      [[ -z "$prop_id" || -z "$prop_file" ]] && continue
-      prop_path="$proposals_dir/$prop_file"
-      [[ -f "$prop_path" ]] || continue
-
-      prop_aat=$(yq '.auto_approve_target // false' "$prop_path" 2>/dev/null || echo "false")
-      local prop_status
-      prop_status=$(yq '.status // ""' "$prop_path" 2>/dev/null || echo "")
-      [[ "$prop_aat" == "true" && "$prop_status" == "pending" ]] || continue
-
-      prop_aattempts=$(yq '.auto_approve_attempts // 0' "$prop_path" 2>/dev/null || echo "0")
-      if [[ "$prop_aattempts" -ge 3 ]]; then
-        evolve_log "WARN graduate.sh: proposal $prop_id has reached max auto-approve attempts; skipping (manual /evolve required)"
-        continue
+      is_auto=$(yq ".proposals[$i].auto_approve_target // false" "$proposal_index" 2>/dev/null || echo "false")
+      if [[ "$is_auto" == "true" ]]; then
+        prop_id=$(yq ".proposals[$i].id // \"\"" "$proposal_index" 2>/dev/null || echo "")
+        [[ -n "$prop_id" ]] && orphan_ids+=( "$prop_id" )
       fi
-
-      # Bump auto_approve_attempts atomically (lock held).
-      local tmp_aa
-      tmp_aa=$(mktemp)
-      yq '.auto_approve_attempts = (.auto_approve_attempts // 0) + 1' "$prop_path" > "$tmp_aa"
-      mv "$tmp_aa" "$prop_path"
-
-      # Reconstruct CONTENT_FILE.
-      content_file=$(mktemp)
-      yq '.proposed_content // ""' "$prop_path" > "$content_file"
-
-      # Release lock for approve call.
-      release_lock "$lock_file"
-      trap - EXIT
-
-      RESUME_CALLS=$((RESUME_CALLS + 1))
-      if [[ "$scope" == "project" ]]; then
-        if ! "$approve_script" "$project_arg" "$prop_id" "" "$content_file" >/dev/null 2>&1; then
-          evolve_log "INFO graduate.sh: resume-approve failed for $prop_id (will retry next run)"
-        fi
-      else
-        if ! "$approve_script" "$prop_id" >/dev/null 2>&1; then
-          evolve_log "INFO graduate.sh: resume-approve failed for $prop_id (will retry next run)"
-        fi
-      fi
-      rm -f "$content_file"
-
-      # Reacquire lock for next iteration.
-      if ! acquire_lock "$lock_file"; then
-        evolve_log "INFO graduate.sh: lost $scope lock during resume index scan; aborting pre-pass"
-        index_clean=0
-        break
-      fi
-      trap "release_lock \"$lock_file\"" EXIT
     done
   fi
+
+  # Phase B: process each orphan id with release/reacquire per iteration.
+  local id still_pending prop_file prop_path attempts tmp_aa content_file rc
+  for id in "${orphan_ids[@]+"${orphan_ids[@]}"}"; do
+    # B.1 Re-validate orphan still in live index (caller still holds lock).
+    still_pending=$(yq ".proposals[] | select(.id == \"$id\") | .id" "$proposal_index" 2>/dev/null || echo "")
+    if [[ -z "$still_pending" ]]; then
+      evolve_log "INFO graduate.sh: orphan $id no longer in live index, skipping"
+      continue
+    fi
+
+    # B.2 Resolve prop_path from the index's .file field; read auto_approve_attempts
+    # from the proposal yaml (NOT from the index -- the index entry doesn't carry that
+    # field). Mirror the existing pattern at lines 196-200.
+    prop_file=$(yq ".proposals[] | select(.id == \"$id\") | .file // \"\"" "$proposal_index" 2>/dev/null || echo "")
+    if [[ -z "$prop_file" ]]; then
+      evolve_log "ERROR graduate.sh: orphan $id missing .file field in index, skipping"
+      continue
+    fi
+    prop_path="$proposals_dir/$prop_file"
+    if [[ ! -f "$prop_path" ]]; then
+      evolve_log "WARN graduate.sh: orphan $id proposal file missing: $prop_path; skipping"
+      continue
+    fi
+
+    # B.2a Re-check yaml's status and auto_approve_target after resolving prop_path.
+    # Defends against the case where the proposal was manually transitioned
+    # (e.g., to rejected) between Phase A's id collection and Phase B's processing.
+    prop_status=$(yq '.status // ""' "$prop_path" 2>/dev/null || echo "")
+    prop_aat=$(yq '.auto_approve_target // false' "$prop_path" 2>/dev/null || echo "false")
+    if [[ "$prop_status" != "pending" ]] || [[ "$prop_aat" != "true" ]]; then
+      evolve_log "INFO graduate.sh: orphan $id no longer eligible (status=$prop_status, auto_approve_target=$prop_aat); skipping"
+      continue
+    fi
+
+    # B.3 Check cap BEFORE bumping (cap=3). Read from proposal yaml. Mirror lines 207-211.
+    attempts=$(yq '.auto_approve_attempts // 0' "$prop_path" 2>/dev/null || echo 0)
+    if [[ "$attempts" -ge 3 ]]; then
+      evolve_log "WARN graduate.sh: orphan $id exceeded auto_approve_attempts cap (=$attempts); skipping (manual /evolve required)"
+      continue
+    fi
+
+    # B.4 Bump auto_approve_attempts atomically on the proposal yaml.
+    # (NOT on the index). Mirror the existing pattern at lines 213-217.
+    tmp_aa=$(mktemp "${prop_path}.XXXXXX")
+    yq '.auto_approve_attempts = (.auto_approve_attempts // 0) + 1' "$prop_path" > "$tmp_aa"
+    mv "$tmp_aa" "$prop_path"
+
+    # B.5 Build content_file (ONLY .proposed_content). Mirror lines 219-221.
+    content_file=$(mktemp /tmp/graduate-orphan-content.XXXXXX)
+    yq '.proposed_content // ""' "$prop_path" > "$content_file"
+
+    # B.6 Release caller's lock around the approve invocation.
+    release_lock "$lock_file"
+    trap - EXIT
+
+    # B.7 Approve under `if !` to preserve loop continuation under set -euo pipefail.
+    # Mirror the existing pattern at lines 228-236.
+    RESUME_CALLS=$((RESUME_CALLS + 1))
+    if [[ "$scope" == "project" ]]; then
+      if ! "$approve_script" "$project_arg" "$id" "" "$content_file" >/dev/null 2>&1; then
+        rc=$?
+        evolve_log "WARN graduate.sh: resume-approve failed for orphan $id (rc=$rc); continuing"
+      fi
+    else
+      if ! "$approve_script" "$id" >/dev/null 2>&1; then
+        rc=$?
+        evolve_log "WARN graduate.sh: resume-approve failed for orphan $id (rc=$rc); continuing"
+      fi
+    fi
+
+    # B.8 Reacquire lock; cleanup content_file regardless of approve outcome.
+    if ! acquire_lock "$lock_file"; then
+      rm -f "$content_file"
+      evolve_log "ERROR graduate.sh: lost $scope lock during resume index scan; aborting remaining orphans"
+      index_clean=0
+      break
+    fi
+    trap "release_lock \"$lock_file\"" EXIT
+    rm -f "$content_file"
+  done
 
   # ── Directory scan (only if index scan completed cleanly) ───────────────
   if [[ "$index_clean" == "1" && -d "$proposals_dir" ]]; then
@@ -268,6 +319,10 @@ resume_orphans() {
       # Repair-by-append to live index (atomic temp+mv).
       local pf_domain tmp_idx
       pf_domain=$(yq '.domain // "unknown"' "$f" 2>/dev/null || echo "unknown")
+      if ! validate_id "$pf_domain"; then
+        evolve_log "WARN graduate.sh: invalid domain='$pf_domain' for orphan ${pf_id:-<unknown>}; using 'unknown'"
+        pf_domain="unknown"
+      fi
       tmp_idx=$(mktemp)
       yq ".proposals += [{
         \"id\": \"${pf_id}\",
@@ -327,15 +382,18 @@ resume_orphans() {
 }
 
 # ── parse_agent_yaml <agent_output_var> -> sets globals: PARSE_NAME, PARSE_TITLE,
-# PARSE_DESCRIPTION, PARSE_PROPOSED_CONTENT_PATH (a tempfile path), PARSE_OK.
+# PARSE_DESCRIPTION, PARSE_PROPOSED_CONTENT_PATH (a tempfile path).
+# Returns 0 on success, 1 on parse/validation failure.
 # Caller is responsible for `rm -f "$PARSE_PROPOSED_CONTENT_PATH"`.
 parse_agent_yaml() {
-  PARSE_OK=0
   PARSE_NAME=""
   PARSE_TITLE=""
   PARSE_DESCRIPTION=""
   PARSE_PROPOSED_CONTENT_PATH=""
   local out="$1"
+  # C4 defense-in-depth: strip markdown code fences (in case a future caller
+  # bypasses the upstream strip applied before INSUFFICIENT_CONTEXT check).
+  out=$(printf '%s\n' "$out" | sed '/^```yaml$/d; /^```$/d')
   local tmp
   tmp=$(mktemp)
   printf '%s\n' "$out" > "$tmp"
@@ -364,7 +422,21 @@ parse_agent_yaml() {
     rm -f "$tmp"
     return 1
   fi
+  # NOTE: no equivalent epoch-pattern guard (-[0-9]{10}$) is added here because
+  # the agent prompt limits name to 45 chars and LLMs don't naturally produce
+  # Unix-epoch suffixes; validate_id still catches any oversized output.
   if [[ "$n" =~ -[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  # I6: strip tabs and carriage returns from title and description (LLM output
+  # may contain literal control characters that would corrupt the proposal yaml).
+  t=$(printf '%s' "$t" | tr -d '\t\r')
+  d=$(printf '%s' "$d" | tr -d '\t\r')
+  # Post-strip empty check: a tab-only title/description passes the pre-strip check
+  # but becomes empty after stripping; reject it here before assigning to PARSE_*.
+  if [[ -z "$t" || -z "$d" ]]; then
     rm -f "$tmp"
     return 1
   fi
@@ -383,7 +455,6 @@ parse_agent_yaml() {
   PARSE_TITLE="$t"
   PARSE_DESCRIPTION="$d"
   PARSE_PROPOSED_CONTENT_PATH="$pc_path"
-  PARSE_OK=1
   return 0
 }
 
@@ -550,6 +621,10 @@ scope_pass() {
       [[ -f "$inst_yaml" ]] || continue
       local domain
       domain=$(yq '.domain // "unknown"' "$inst_yaml" 2>/dev/null || echo "unknown")
+      if ! validate_id "$domain"; then
+        evolve_log "WARN graduate.sh: invalid domain='$domain' for instinct=$inst_id; using 'unknown'"
+        domain="unknown"
+      fi
       CANDS_SNAPSHOT+=("${conf}	${inst_id}	${inst_yaml}	${domain}")
     done <<< "$sorted"
   fi
@@ -592,6 +667,11 @@ scope_pass() {
         evolve_log "WARN graduate.sh: agent invocation failed for $cinst"
         continue
       }
+
+    # C4: strip markdown code fences BEFORE the INSUFFICIENT_CONTEXT check so that
+    # a fenced INSUFFICIENT_CONTEXT response isn't missed (first non-empty line
+    # would be "```yaml" rather than the sentinel without this strip).
+    agent_output=$(printf '%s\n' "$agent_output" | sed '/^```yaml$/d; /^```$/d')
 
     # Parse: trim and take first non-empty line for INSUFFICIENT_CONTEXT check.
     local first_line
@@ -676,9 +756,9 @@ scope_pass() {
   fi
 
   # ── For each successful candidate: write proposal, dispatch ──────────
-  local now_iso date_str
+  local now_iso
   now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  date_str=$(date -u +%Y-%m-%d)
+  # date_str removed: proposal_id now uses EPOCH_NOW (captured once at script start).
 
   local lock_lost=0
   if [[ -n "$FILTERED_BUFFER" ]]; then
@@ -691,82 +771,56 @@ scope_pass() {
         pending_file=$(read_pending_memory_proposal_for_instinct "$proposal_index" "$proposals_dir" "$f_inst" "$src_field" "$count_field")
         if [[ -n "$pending_file" ]]; then
           if [[ "$scope" == "project" ]]; then
-            archive_proposal "$proposals_dir/$pending_file" \
-              "$proposal_archived_dir" "$proposal_archived_index" \
-              "$proposal_index" "superseded_by_auto" || \
-              evolve_log "WARN graduate.sh: archive_proposal (project) failed for $pending_file"
-          else
-            # Global memory archival: inline to write correct source_global_instincts schema.
-            local pend_path pend_arch_path pend_id pend_type pend_domain
-            pend_path="$proposals_dir/$pending_file"
-            pend_arch_path="$proposal_archived_dir/$pending_file"
-            local pend_resolved_at
-            pend_resolved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            if [[ -f "$pend_path" ]]; then
-              local tmp_pend
-              tmp_pend=$(mktemp)
-              yq ".status = \"superseded_by_auto\" | .resolved_at = \"${pend_resolved_at}\"" \
-                "$pend_path" > "$tmp_pend"
-              mv "$tmp_pend" "$pend_arch_path"
-              rm -f "$pend_path"
-            elif [[ ! -f "$pend_arch_path" ]]; then
-              evolve_log "WARN graduate.sh: global pending proposal $pending_file missing from both paths; skipping inline archival"
-              continue
-            fi
-            # Read fields from archived copy.
-            pend_id=$(yq '.id // ""' "$pend_arch_path" 2>/dev/null || echo "")
-            [[ -z "$pend_id" ]] && pend_id="${pending_file%.yaml}"
-            pend_type=$(yq '.type // ""' "$pend_arch_path" 2>/dev/null || echo "")
-            pend_domain=$(yq '.domain // "unknown"' "$pend_arch_path" 2>/dev/null || echo "unknown")
-            # Rewrite live index removing entry.
-            if [[ -f "$proposal_index" ]]; then
-              local tmp_pend_idx
-              tmp_pend_idx=$(mktemp)
-              yq ".proposals = [.proposals[] | select(.id != \"${pend_id}\")]" \
-                "$proposal_index" > "$tmp_pend_idx"
-              mv "$tmp_pend_idx" "$proposal_index"
-            fi
-            # Append to archived index with correct global schema (idempotent).
-            local ALREADY_ARCH_PEND
-            ALREADY_ARCH_PEND=$(yq "[.proposals[] | select(.id == \"${pend_id}\")] | length" \
-              "$proposal_archived_index" 2>/dev/null || echo "0")
-            if [[ "$ALREADY_ARCH_PEND" -gt 0 ]]; then
-              evolve_log "INFO graduate.sh: global archived index already has entry for $pend_id; skipping"
+            # Read pending proposal_id from the live index by file (explicit, not filename-derived).
+            local pend_id_proj
+            pend_id_proj=$(yq ".proposals[] | select(.file == \"${pending_file}\") | .id // \"\"" \
+              "$proposal_index" 2>/dev/null || echo "")
+            if [[ -z "$pend_id_proj" ]]; then
+              evolve_log "WARN graduate.sh: cannot resolve id for pending project file $pending_file; skipping preempt"
             else
-              local pend_sgi_count pend_sgi_yaml
-              pend_sgi_count=$(yq '.source_global_instincts | length' "$pend_arch_path" 2>/dev/null || echo "0")
-              pend_sgi_yaml=""
-              local pend_i
-              for ((pend_i=0; pend_i<pend_sgi_count; pend_i++)); do
-                local pend_sgi
-                pend_sgi=$(yq ".source_global_instincts[${pend_i}]" "$pend_arch_path" 2>/dev/null || echo "")
-                pend_sgi_yaml+="\"${pend_sgi}\", "
-              done
-              pend_sgi_yaml="${pend_sgi_yaml%, }"
-              local tmp_pend_arch
-              tmp_pend_arch=$(mktemp)
-              yq ".proposals += [{
-                \"id\": \"${pend_id}\",
-                \"type\": \"${pend_type}\",
-                \"domain\": \"${pend_domain}\",
-                \"status\": \"superseded_by_auto\",
-                \"resolved_at\": \"${pend_resolved_at}\",
-                \"source_global_instincts\": [${pend_sgi_yaml}],
-                \"source_global_instinct_count\": ${pend_sgi_count},
-                \"file\": \"${pending_file}\"
-              }]" "$proposal_archived_index" > "$tmp_pend_arch"
-              mv "$tmp_pend_arch" "$proposal_archived_index"
+              archive_proposal "$proposals_dir/$pending_file" "$pend_id_proj" \
+                "$proposal_archived_dir" "$proposal_archived_index" \
+                "$proposal_index" "superseded_by_auto" || \
+                evolve_log "WARN graduate.sh: archive_proposal (project) failed for $pend_id_proj"
+            fi
+          else
+            # Global memory archival via archive_proposal --scope global.
+            # Read pending proposal_id from the live index by file (explicit, not filename-derived).
+            # Deliberate semantics shift: the prior inline code skipped when live was missing AND
+            # archived was present. archive_proposal's recovery branch instead self-heals indexes,
+            # which is correct for an interrupted prior run.
+            local pend_id_global
+            pend_id_global=$(yq ".proposals[] | select(.file == \"${pending_file}\") | .id // \"\"" \
+              "$proposal_index" 2>/dev/null || echo "")
+            if [[ -z "$pend_id_global" ]]; then
+              # Live index has no entry for this file. Check archived path as last resort.
+              pend_id_global=$(yq '.id // ""' "$proposal_archived_dir/$pending_file" 2>/dev/null || echo "")
+            fi
+            if [[ -z "$pend_id_global" ]]; then
+              evolve_log "WARN graduate.sh: cannot resolve id for pending global file $pending_file; skipping preempt"
+            else
+              local arch_rc=0
+              archive_proposal "$proposals_dir/$pending_file" "$pend_id_global" \
+                "$proposal_archived_dir" "$proposal_archived_index" \
+                "$proposal_index" "superseded_by_auto" --scope global || arch_rc=$?
+              if [[ "$arch_rc" -ne 0 ]]; then
+                evolve_log "WARN graduate.sh: archive_proposal (global) failed for $pend_id_global (rc=$arch_rc)"
+              fi
             fi
           fi
         fi
       fi
 
       # ── Generate proposal id ─────────────────────────────────────────
+      # Epoch suffix ensures uniqueness across same-day preempt cycles (C1.A fix):
+      # if a propose-tier proposal is superseded_by_auto on the same day, the
+      # auto-tier proposal gets a distinct EPOCH_NOW and therefore a distinct id
+      # and file path — preventing mv-clobber and archived-index collisions.
       local proposal_id
       if [[ "$scope" == "project" ]]; then
-        proposal_id="proposal-${f_name}-${date_str}"
+        proposal_id="proposal-${f_name}-${EPOCH_NOW}"
       else
-        proposal_id="global-proposal-${f_name}-memory-${date_str}"
+        proposal_id="global-proposal-${f_name}-memory-${EPOCH_NOW}"
       fi
       if ! validate_id "$proposal_id"; then
         evolve_log "WARN graduate.sh: generated proposal id invalid: $proposal_id (skipping)"
@@ -794,6 +848,7 @@ scope_pass() {
         cat > "$proposal_path" <<YAML
 version: 1
 id: ${proposal_id}
+name: ${f_name}
 type: memory
 domain: ${f_domain}
 created: "${now_iso}"

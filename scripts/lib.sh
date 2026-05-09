@@ -250,8 +250,15 @@ YAML
 
 # ── Global initialization ──────────────────────────────────────────────────
 # init_global
-# Creates the global instinct/proposal directory structure. Idempotent.
-# Warns via evolve_log (never stdout) if $GLOBAL_DIR is not a symlink.
+# Creates the global instinct/proposal/memory directory structure and seeds
+# the index.yaml files. Idempotent -- safe to call from any startup path.
+# Warns via evolve_log (never stdout) if $GLOBAL_DIR exists but is not a symlink.
+#
+# Canonical callers (each calls init_global defensively):
+#   - install.sh                 -- initial setup at install time.
+#   - on-session-start.sh        -- every session-start hook (covers shells started before install completed).
+#   - graduate.sh                -- existing users on the upgrade path may not have re-run install.sh.
+#   - approve-global-proposal.sh -- ensures $GLOBAL_DIR/memory/ exists before writing memory artifacts.
 
 init_global() {
   if [[ ! -d "$GLOBAL_DIR" ]]; then

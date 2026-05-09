@@ -148,6 +148,8 @@ archive_proposal <proposal_file> <proposal_id> <archive_dir> <archived_index> <l
 
 Called from `reject-proposal.sh`, `reject-global-proposal.sh`, and `graduate.sh` (for `superseded_by_auto` archival). The caller must hold the appropriate lock (`evolve.lock` for project, `global.lock` for global). `approve-proposal.sh` and `approve-global-proposal.sh` keep their own inline archival logic (they have richer outer state — IS_RECOVERY/MID_ARCHIVAL/artifact-write/instinct-archival — that does not fit the helper).
 
+**Behavioral note for `reject-global-proposal.sh`:** prior to the helper extraction, this script hard-errored when the live proposal file was missing (`if [[ ! -f "$PROPOSAL_PATH" ]]; then exit 1`). The current code routes through `archive_proposal()`, whose recovery branch self-heals the live and archived indexes when the file is already at the archived path (the typical aftermath of an interrupted prior run). This matches the recovery semantics of `reject-proposal.sh` — re-running rejection on an interrupted run now reconciles state instead of failing.
+
 #### `acquire_lock_blocking()`
 
 Blocking variant of `acquire_lock` for admin scripts that must wait for the lock rather than skip.

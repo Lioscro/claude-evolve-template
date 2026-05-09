@@ -186,6 +186,18 @@ resume_orphans() {
   fi
   trap "release_lock \"$lock_file\"" EXIT
 
+  # ── Hoisted approve-script executable precheck ───────────────────────────
+  # If the approve script is not executable, neither index-scan nor dir-scan
+  # can do useful work — skip the entire pre-pass cleanly. Hoisting avoids
+  # redundant per-iteration stat calls. Orphans remain unchanged for retry on
+  # the next graduate.sh invocation if the missing executable is restored.
+  if [[ ! -x "$approve_script" ]]; then
+    evolve_log "ERROR graduate.sh: approve script not executable: $approve_script (skipping $scope resume pre-pass)"
+    release_lock "$lock_file"
+    trap - EXIT
+    return 0
+  fi
+
   # ── Index scan ───────────────────────────────────────────────────────────
   # Phase A: collect orphan ids while holding the lock.
   # Iterate by position once (no release/reacquire here) to gather ids.
@@ -844,6 +856,18 @@ scope_pass() {
 
       # ── Write proposal yaml ──────────────────────────────────────────
       local proposal_path="$proposals_dir/${proposal_id}.yaml"
+
+      # Collision guard: two distinct instincts could agent-derive the same
+      # f_name within a single run, producing identical proposal_id (since
+      # EPOCH_NOW is captured once per script invocation). The second writer
+      # would silently clobber the first proposal yaml AND the live index
+      # would carry duplicate id entries. Skip the second to preserve the first.
+      if [[ -f "$proposal_path" ]]; then
+        evolve_log "WARN graduate.sh: collision on $proposal_id (sibling instinct produced duplicate name '$f_name'); skipping"
+        rm -f "$f_pc"
+        continue
+      fi
+
       if [[ "$scope" == "project" ]]; then
         cat > "$proposal_path" <<YAML
 version: 1
@@ -855,7 +879,7 @@ created: "${now_iso}"
 title: "${title_esc}"
 description: "${desc_esc}"
 proposed_content: |
-$(echo "$pc_str" | sed 's/^/  /')
+$(printf '%s\n' "$pc_str" | sed 's/^/  /')
 source_instincts:
   - ${f_inst}
 source_instinct_count: 1
@@ -867,14 +891,14 @@ YAML
         cat > "$proposal_path" <<YAML
 version: 1
 id: ${proposal_id}
+name: ${f_name}
 type: memory
 domain: ${f_domain}
 created: "${now_iso}"
 title: "${title_esc}"
 description: "${desc_esc}"
-name: ${f_name}
 proposed_content: |
-$(echo "$pc_str" | sed 's/^/  /')
+$(printf '%s\n' "$pc_str" | sed 's/^/  /')
 source_global_instincts:
   - ${f_inst}
 source_global_instinct_count: 1
@@ -915,6 +939,17 @@ YAML
 
       # ── Auto-tier dispatch ───────────────────────────────────────────
       if [[ "$f_tier" == "auto" ]]; then
+        # Approve-script executable precheck: avoid wasting an attempt on a
+        # non-executable script. The proposal yaml is already written and the
+        # live index is already appended -- this is the intended state. The
+        # next graduate.sh run's resume_orphans will pick up the orphan and
+        # retry once the script is restored.
+        if [[ ! -x "$approve_script" ]]; then
+          evolve_log "ERROR graduate.sh: approve script not executable: $approve_script (skipping auto-tier dispatch for $proposal_id)"
+          rm -f "$f_pc"
+          continue
+        fi
+
         # Bump auto_approve_attempts to 1 atomically (under lock).
         local tmp_aa
         tmp_aa=$(mktemp)

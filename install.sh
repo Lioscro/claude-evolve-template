@@ -133,6 +133,8 @@ symlink_item() {
 echo "Creating symlinks..."
 symlink_item "$REPO_DIR/agents"      "$EVOLVE_DIR/agents"
 symlink_item "$REPO_DIR/scripts"     "$EVOLVE_DIR/scripts"
+# shellcheck source=scripts/lib.sh
+source "$REPO_DIR/scripts/lib.sh"
 symlink_item "$REPO_DIR/config.yaml" "$EVOLVE_DIR/config.yaml"
 symlink_item "$REPO_DIR/install.sh"  "$EVOLVE_DIR/install.sh"
 symlink_item "$REPO_DIR/uninstall.sh" "$EVOLVE_DIR/uninstall.sh"
@@ -171,6 +173,9 @@ if [[ -d "$EVOLVE_DIR/global" ]] && [[ ! -L "$EVOLVE_DIR/global" ]]; then
 else
   symlink_item "$DATA_GLOBAL" "$EVOLVE_DIR/global"
 fi
+
+# Initialize global directory structure (idempotent)
+init_global
 
 echo ""
 

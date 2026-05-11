@@ -8,6 +8,8 @@ instincts:
   max_injected: 10
   decay_per_run: 0.02
   decay_floor: 0
+  propose_memory_threshold: 0.85
+  auto_memory_threshold: 0.95
 clustering:
   domain_threshold: 5
   min_confidence_for_clustering: 0.4
@@ -24,6 +26,11 @@ global_instincts:
   decay_per_run: 0.02
   decay_floor: 0
   max_injected: 10
+  propose_memory_threshold: 0.85
+  auto_memory_threshold: 0.95
+graduation:
+  max_per_run_per_scope: 10
+  agent_model: claude-haiku-4-5-20251001
 observations:
   max_tool_response_length: 500
   max_observations_per_run: 200

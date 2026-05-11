@@ -250,8 +250,15 @@ YAML
 
 # ── Global initialization ──────────────────────────────────────────────────
 # init_global
-# Creates the global instinct/proposal directory structure. Idempotent.
-# Warns via evolve_log (never stdout) if $GLOBAL_DIR is not a symlink.
+# Creates the global instinct/proposal/memory directory structure and seeds
+# the index.yaml files. Idempotent -- safe to call from any startup path.
+# Warns via evolve_log (never stdout) if $GLOBAL_DIR exists but is not a symlink.
+#
+# Canonical callers (each calls init_global defensively):
+#   - install.sh                 -- initial setup at install time.
+#   - on-session-start.sh        -- every session-start hook (covers shells started before install completed).
+#   - graduate.sh                -- existing users on the upgrade path may not have re-run install.sh.
+#   - approve-global-proposal.sh -- ensures $GLOBAL_DIR/memory/ exists before writing memory artifacts.
 
 init_global() {
   if [[ ! -d "$GLOBAL_DIR" ]]; then
@@ -331,7 +338,11 @@ invoke_agent() {
   local frontmatter
   frontmatter="$(sed -n '/^---$/,/^---$/p' "$agent_file")"
   local model
-  model="$(echo "$frontmatter" | yq '.model // "claude-haiku-4-5"' | head -1)"
+  if [[ -n "${EVOLVE_AGENT_MODEL_OVERRIDE:-}" ]]; then
+    model="$EVOLVE_AGENT_MODEL_OVERRIDE"
+  else
+    model="$(echo "$frontmatter" | yq '.model // "claude-haiku-4-5"' | head -1)"
+  fi
 
   # Strip frontmatter (everything between first --- and second ---), write body to temp file
   # If file doesn't start with ---, copy entire file as-is.
@@ -348,6 +359,252 @@ invoke_agent() {
     --system-prompt-file "$tmp_system" \
     --model "$model" \
     --no-session-persistence
+}
+
+# ── Blocking lock acquisition ───────────────────────────────────────────────
+# acquire_lock_blocking <lock_file> [timeout_seconds]
+# Like acquire_lock but blocks up to timeout_seconds (default 30) instead of
+# returning immediately on contention. Uses fd 9 (same slot as acquire_lock);
+# release_lock works for both.
+
+acquire_lock_blocking() {
+  local lock_file="$1"
+  local timeout="${2:-30}"
+  exec 9>"$lock_file"
+  flock -w "$timeout" 9 || return 1
+  echo $$ >&9
+}
+
+# ── archive_proposal() ──────────────────────────────────────────────────────
+# archive_proposal <proposal_file> <proposal_id> <archive_dir> <archived_index> <live_index> <new_status> [--scope global]
+#
+# Moves a pending proposal to its archived directory, removes it from the live
+# index, and appends an entry to the archived index. Idempotent:
+# recovery branch detects already-moved files; index updates self-heal on re-run.
+# Caller is responsible for holding the appropriate lock before calling.
+#
+# The archived-index entry schema is dispatched on scope + type:
+#   scope=project (any type): source_instincts + source_instinct_count
+#   scope=global, type=memory: source_global_instincts + source_global_instinct_count
+#   scope=global, type=promotion: source_project_instincts (objects) + source_project_count (scalar from yaml)
+#   scope=global, type=<unknown>: 6-field entry (id, file, type, domain, status, resolved_at); WARN logged
+#
+# Returns 0 on success or recovery. Returns 1 only if the proposal is missing
+# from both the live path and the archived path. Returns 2 on invalid new_status.
+
+archive_proposal() {
+  local proposal_file="$1"
+  local proposal_id="$2"
+  local archive_dir="$3"
+  local archived_index_path="$4"
+  local live_index_path="$5"
+  local new_status="$6"
+  local scope="project"
+  if [[ "${7:-}" == "--scope" && "${8:-}" == "global" ]]; then
+    scope="global"
+  fi
+
+  # Validate new_status against known enum to defend against accidental arg shifts
+  # (e.g. a caller accidentally passing "--scope" in the status slot).
+  case "$new_status" in
+    approved|rejected|permanently_rejected|superseded_by_auto) ;;
+    *)
+      evolve_log "ERROR archive_proposal: invalid new_status='$new_status' for $proposal_id"
+      return 2
+      ;;
+  esac
+
+  local basename_file
+  basename_file="$(basename "$proposal_file")"
+  local archived_path="$archive_dir/$basename_file"
+
+  local resolved_at
+  resolved_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # Read .type and .domain BEFORE the file move (needed for archived-index dispatch).
+  # Falls back to the archived path in the recovery branch.
+  local prop_type prop_domain
+  if [[ -f "$proposal_file" ]]; then
+    prop_type="$(yq '.type // ""' "$proposal_file" 2>/dev/null || echo "")"
+    prop_domain="$(yq '.domain // "unknown"' "$proposal_file" 2>/dev/null || echo "unknown")"
+  elif [[ -f "$archived_path" ]]; then
+    prop_type="$(yq '.type // ""' "$archived_path" 2>/dev/null || echo "")"
+    prop_domain="$(yq '.domain // "unknown"' "$archived_path" 2>/dev/null || echo "unknown")"
+  else
+    # Missing from both paths.
+    evolve_log "ERROR archive_proposal: proposal not found at $proposal_file or $archived_path"
+    return 1
+  fi
+
+  if [[ ! -f "$proposal_file" ]]; then
+    # Recovery branch: source file already moved to archived path by a prior partial run.
+    evolve_log "INFO archive_proposal: recovery -- $basename_file already at archived path, skipping file move"
+    # Fall through to index updates using the already-archived file.
+  elif [[ -f "$archived_path" ]]; then
+    evolve_log "INFO archive_proposal: clobbering existing archived file at $archived_path with live copy from $proposal_file (recovery scenario)"
+  fi
+  if [[ -f "$proposal_file" ]]; then
+    # Normal branch: write status+resolved_at to temp file, mv to archived, rm original.
+    local tmp_prop
+    tmp_prop="$(mktemp)"
+    yq "
+      .status = \"${new_status}\" |
+      .resolved_at = \"${resolved_at}\"
+    " "$proposal_file" > "$tmp_prop"
+    mv "$tmp_prop" "$archived_path"
+    rm -f "$proposal_file"
+  fi
+
+  # Atomic-rewrite live index removing the proposal entry by id.
+  if [[ -f "$live_index_path" ]]; then
+    local tmp_live
+    tmp_live="$(mktemp)"
+    if ! yq ".proposals = [.proposals[] | select(.id != \"${proposal_id}\")]" "$live_index_path" > "$tmp_live"; then
+      evolve_log "ERROR archive_proposal: failed to rewrite live index for $proposal_id (continuing)"
+      rm -f "$tmp_live"
+    elif [[ ! -s "$tmp_live" ]]; then
+      rm -f "$tmp_live"
+      evolve_log "ERROR archive_proposal: yq produced empty live-index rewrite for $proposal_id"
+      return 1
+    else
+      mv "$tmp_live" "$live_index_path"
+    fi
+  fi
+
+  # Idempotency guard: check if archived index already has this entry.
+  # This guard protects against double-append when reject paths are re-invoked on an
+  # already-archived id (e.g. reject-proposal.sh re-run after a partial failure).
+  # It does NOT interfere with Phase 4's superseded_by_auto → approved upgrade: that
+  # upgrade is performed inline in approve-proposal.sh and approve-global-proposal.sh,
+  # which do NOT call archive_proposal() at all — they have their own richer archival
+  # logic (IS_RECOVERY, MID_ARCHIVAL, artifact writes, instinct archival). Per-tick
+  # unique ids (Phase 3) prevent collision in normal flow; this guard remains as
+  # defense-in-depth for manual re-invocation of reject scripts.
+  if [[ -f "$archived_index_path" ]]; then
+    local already_count
+    already_count="$(yq "[.proposals[] | select(.id == \"${proposal_id}\")] | length" "$archived_index_path" 2>/dev/null || echo "0")"
+    if [[ "$already_count" -gt 0 ]]; then
+      evolve_log "INFO archive_proposal: archived index already has entry for $proposal_id; skipping append"
+      return 0
+    fi
+  fi
+
+  # Build and append archived-index entry, dispatched on scope + type.
+  if [[ -f "$archived_index_path" ]]; then
+    local tmp_arch
+    tmp_arch="$(mktemp)"
+    local append_ok=1
+
+    if [[ "$scope" == "project" ]]; then
+      # Project (any type): source_instincts flat strings + source_instinct_count.
+      local src_count
+      src_count="$(yq '.source_instincts | length' "$archived_path" 2>/dev/null || echo "0")"
+      local src_instincts=()
+      local i
+      for ((i=0; i<src_count; i++)); do
+        src_instincts+=("$(yq ".source_instincts[$i]" "$archived_path")")
+      done
+      local src_instinct_yaml=""
+      local si
+      for si in ${src_instincts[@]+"${src_instincts[@]}"}; do
+        src_instinct_yaml+="\"${si}\", "
+      done
+      src_instinct_yaml="${src_instinct_yaml%, }"
+
+      if ! yq ".proposals += [{
+        \"id\": \"${proposal_id}\",
+        \"type\": \"${prop_type}\",
+        \"domain\": \"${prop_domain}\",
+        \"status\": \"${new_status}\",
+        \"resolved_at\": \"${resolved_at}\",
+        \"source_instincts\": [${src_instinct_yaml}],
+        \"source_instinct_count\": ${src_count},
+        \"file\": \"${basename_file}\"
+      }]" "$archived_index_path" > "$tmp_arch"; then
+        append_ok=0
+      fi
+
+    elif [[ "$prop_type" == "memory" ]]; then
+      # Global + memory: source_global_instincts flat strings + source_global_instinct_count.
+      local sgi_count
+      sgi_count="$(yq '.source_global_instincts | length' "$archived_path" 2>/dev/null || echo "0")"
+      local sgi_yaml=""
+      local j sgi
+      for ((j=0; j<sgi_count; j++)); do
+        sgi="$(yq ".source_global_instincts[$j]" "$archived_path" 2>/dev/null || echo "")"
+        sgi_yaml+="\"${sgi}\", "
+      done
+      sgi_yaml="${sgi_yaml%, }"
+
+      if ! yq ".proposals += [{
+        \"id\": \"${proposal_id}\",
+        \"type\": \"memory\",
+        \"domain\": \"${prop_domain}\",
+        \"status\": \"${new_status}\",
+        \"resolved_at\": \"${resolved_at}\",
+        \"source_global_instincts\": [${sgi_yaml}],
+        \"source_global_instinct_count\": ${sgi_count},
+        \"file\": \"${basename_file}\"
+      }]" "$archived_index_path" > "$tmp_arch"; then
+        append_ok=0
+      fi
+
+    elif [[ "$prop_type" == "promotion" ]]; then
+      # Global + promotion: source_project_instincts objects + source_project_count scalar from yaml.
+      # source_project_count is read as a SCALAR from yaml, NOT derived from array length,
+      # because the count and array length may legitimately diverge per existing semantics.
+      local src_project_count
+      src_project_count="$(yq '.source_project_count // 0' "$archived_path" 2>/dev/null || echo "0")"
+      local spi_count
+      spi_count="$(yq '.source_project_instincts | length' "$archived_path" 2>/dev/null || echo "0")"
+      local spi_yaml=""
+      local k spi_proj spi_inst
+      for ((k=0; k<spi_count; k++)); do
+        spi_proj="$(yq ".source_project_instincts[$k].project" "$archived_path" 2>/dev/null || echo "")"
+        spi_inst="$(yq ".source_project_instincts[$k].instinct" "$archived_path" 2>/dev/null || echo "")"
+        spi_yaml+="{\"project\": \"${spi_proj}\", \"instinct\": \"${spi_inst}\"}, "
+      done
+      spi_yaml="${spi_yaml%, }"
+
+      if ! yq ".proposals += [{
+        \"id\": \"${proposal_id}\",
+        \"type\": \"${prop_type}\",
+        \"domain\": \"${prop_domain}\",
+        \"status\": \"${new_status}\",
+        \"resolved_at\": \"${resolved_at}\",
+        \"source_project_count\": ${src_project_count},
+        \"source_project_instincts\": [${spi_yaml}],
+        \"file\": \"${basename_file}\"
+      }]" "$archived_index_path" > "$tmp_arch"; then
+        append_ok=0
+      fi
+
+    else
+      # Global + unknown type: 6-field entry matching approve-global-proposal.sh unknown branch.
+      # No source_* fields, no created_at. Log WARN.
+      evolve_log "WARN archive_proposal: unknown global type='$prop_type' for $proposal_id; writing minimal 6-field entry"
+
+      if ! yq ".proposals += [{
+        \"id\": \"${proposal_id}\",
+        \"file\": \"${basename_file}\",
+        \"type\": \"${prop_type}\",
+        \"domain\": \"${prop_domain}\",
+        \"status\": \"${new_status}\",
+        \"resolved_at\": \"${resolved_at}\"
+      }]" "$archived_index_path" > "$tmp_arch"; then
+        append_ok=0
+      fi
+    fi
+
+    if [[ "$append_ok" -eq 1 ]]; then
+      mv "$tmp_arch" "$archived_index_path"
+    else
+      evolve_log "ERROR archive_proposal: failed to append to archived index for $proposal_id (continuing)"
+      rm -f "$tmp_arch"
+    fi
+  fi
+
+  return 0
 }
 
 # ── Locking ─────────────────────────────────────────────────────────────────

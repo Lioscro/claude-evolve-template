@@ -509,6 +509,11 @@ if [[ -x "$EVOLVE_DIR/scripts/promote.sh" ]]; then
   "$EVOLVE_DIR/scripts/promote.sh" 2>/dev/null || true
 fi
 
+# ── Trigger graduation (after promotion) ─────────────────────────────────
+if [[ -x "$EVOLVE_DIR/scripts/graduate.sh" ]]; then
+  "$EVOLVE_DIR/scripts/graduate.sh" "$PROJECT_ID" 2>/dev/null || true
+fi
+
 # ── Sync to git (after all writes including clustering) ───────────────────
 evolve_git_push "evolve(observe): ${CREATED_COUNT} created, ${OBS_REINFORCED_COUNT} reinforced, ${DECAYED_COUNT} decayed, ${DELETED_COUNT} deleted"
 

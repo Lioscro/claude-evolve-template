@@ -41,7 +41,10 @@ if [[ ! -f "$OBS_FILE" ]] || [[ ! -s "$OBS_FILE" ]]; then
 fi
 
 OBSERVATIONS=$(tail -n "$OBS_WINDOW" "$OBS_FILE")
-line_count=$(printf '%s\n' "$OBSERVATIONS" | grep -c . || echo "0")
+# grep -c always prints a count, but exits 1 when count is 0; `|| true`
+# preserves the printed "0" without appending a second one (as `|| echo "0"`
+# would when OBS_FILE contains only blank lines).
+line_count=$(printf '%s\n' "$OBSERVATIONS" | grep -c . || true)
 evolve_log "reinforce-worker.sh: sending last $line_count observation lines (window=$OBS_WINDOW)"
 
 # ── Read instinct index ───────────────────────────────────────────────────
@@ -94,11 +97,11 @@ ${OBSERVATIONS}"
 
 # ── Build static-context tempfile (instinct sections → system prompt cache) ─
 static_ctx_file=$(mktemp)
-# Replace the lock-only EXIT trap (line 27) with a combined version that also
-# cleans the tempfile. Bash 3.2 replaces traps; explicit rm -f calls below
-# still cover the success and failure paths, but the trap protects the
-# window between mktemp and the first explicit rm -f against signal-induced
-# exits.
+# Replace the lock-only EXIT trap (set right after acquire_lock above) with a
+# combined version that also cleans the tempfile. Bash 3.2 replaces traps;
+# explicit rm -f calls below still cover the success and failure paths, but
+# the trap protects the window between mktemp and the first explicit rm -f
+# against signal-induced exits.
 trap 'release_lock "$LOCK_FILE"; rm -f "$static_ctx_file"' EXIT
 printf '## Existing Instincts\n%s\n\n## Global Instincts\n%s\n' \
   "$INSTINCT_YAML" "$GLOBAL_INSTINCT_YAML" > "$static_ctx_file"

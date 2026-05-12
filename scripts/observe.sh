@@ -88,8 +88,9 @@ if [[ -n "$INSTINCT_YAML" ]]; then
 else
   printf '## Existing Instincts\n(none)\n' > "$STATIC_CTX"
 fi
-# Replace the existing EXIT trap (line 25) with a combined version:
-# Bash 3.2 replaces traps -- setting a second trap EXIT would lose lock release.
+# Replace the lock-only EXIT trap (set right after acquire_lock above) with a
+# combined version. Bash 3.2 replaces traps -- setting a second trap EXIT
+# would lose lock release.
 trap 'release_lock "$LOCK_FILE"; rm -f "$STATIC_CTX"' EXIT
 
 # ── Read config values ─────────────────────────────────────────────────────

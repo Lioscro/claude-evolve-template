@@ -233,8 +233,10 @@ trap 'release_lock "$GLOBAL_LOCK"; rm -f "$static_ctx_file"' EXIT
 AGENT_INPUT="Identify cross-project promotion candidates from the runtime context."
 
 # ── Release global lock before agent invocation ──────────────────────────
+# Keep a tempfile-only EXIT trap during the long agent invocation so a
+# signal-induced exit still cleans the static-context tempfile.
 release_lock "$GLOBAL_LOCK"
-trap - EXIT
+trap 'rm -f "$static_ctx_file"' EXIT
 
 # ── Invoke promoter agent ────────────────────────────────────────────────
 AGENT_OUTPUT=$(echo "$AGENT_INPUT" | ENABLE_PROMPT_CACHING_1H=1 invoke_agent "$EVOLVE_DIR/agents/promoter.md" "$static_ctx_file" 2>/dev/null) || {

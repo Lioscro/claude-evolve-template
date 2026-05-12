@@ -93,7 +93,7 @@ When `static_context_file` is provided (non-empty path to a non-empty file), its
 
 **Graceful no-op:** the static-context arg is silently ignored when `$2` is empty, refers to a non-existent path, or refers to an existing but empty file. This is intentional — callers may conditionally build context without needing to branch on whether content exists.
 
-**Asymmetry — graduate.sh:** `graduate.sh` (line 677) invokes `invoke_agent` with stdin via `< file` redirection. It has no static prefix to cache, so it passes only a single arg. Do NOT add a static-context arg to that call site.
+**Asymmetry — graduate.sh:** `graduate.sh` invokes `invoke_agent` for the memory-writer agent with stdin via `< file` redirection (grep for `invoke_agent.*memory-writer`). It has no static prefix to cache, so it passes only a single arg. Do NOT add a static-context arg to that call site.
 
 **1-hour cache for low-frequency callers:** `promote.sh` invokes the promoter agent at most hourly (frequency gate). The default 5-minute prompt-cache TTL is always cold at that interval, so the promoter call is prefixed with `ENABLE_PROMPT_CACHING_1H=1` to opt into Anthropic's 1-hour cache tier. The env var propagates to the `claude -p` subprocess inside `invoke_agent`. Reinforcer (per-turn, within session) and observer (per-session-start, batches sub-second apart) keep the 5-minute default — cross-session cache hits are unlikely to be byte-stable anyway due to instinct mutation between sessions.
 

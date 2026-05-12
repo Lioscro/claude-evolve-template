@@ -26,13 +26,26 @@ if ! acquire_lock "$LOCK_FILE"; then
 fi
 trap 'release_lock "$LOCK_FILE"' EXIT
 
+# ── Read observation window config (must be before tail consumption) ──────
+OBS_WINDOW=$(read_config '.reinforcement.recent_observations_window // 50' "$PROJECT_ID" 2>/dev/null || echo "50")
+OBS_WINDOW=$(validate_numeric "$OBS_WINDOW" "$_NUMERIC_NONNEG_INT" "50")
+if [[ "$OBS_WINDOW" -eq 0 ]]; then
+  evolve_log "WARN reinforce-worker.sh: recent_observations_window=0 invalid, using default 50"
+  OBS_WINDOW=50
+fi
+
 # ── Read current session's observations ────────────────────────────────────
 if [[ ! -f "$OBS_FILE" ]] || [[ ! -s "$OBS_FILE" ]]; then
   evolve_log "reinforce-worker.sh: no observations for session $SESSION_ID"
   exit 0
 fi
 
-OBSERVATIONS=$(cat "$OBS_FILE")
+OBSERVATIONS=$(tail -n "$OBS_WINDOW" "$OBS_FILE")
+# grep -c always prints a count, but exits 1 when count is 0; `|| true`
+# preserves the printed "0" without appending a second one (as `|| echo "0"`
+# would when OBS_FILE contains only blank lines).
+line_count=$(printf '%s\n' "$OBSERVATIONS" | grep -c . || true)
+evolve_log "reinforce-worker.sh: sending last $line_count observation lines (window=$OBS_WINDOW)"
 
 # ── Read instinct index ───────────────────────────────────────────────────
 INSTINCT_COUNT=0
@@ -79,20 +92,27 @@ if [[ -d "$GLOBAL_DIR" ]] && [[ -f "$GLOBAL_INDEX_FILE" ]] && [[ "$GLOBAL_COUNT"
   done
 fi
 
-AGENT_INPUT="## Existing Instincts
-${INSTINCT_YAML}
-
-## Global Instincts
-${GLOBAL_INSTINCT_YAML}
-
-## Recent Observations
+AGENT_INPUT="## Recent Observations
 ${OBSERVATIONS}"
 
+# ── Build static-context tempfile (instinct sections → system prompt cache) ─
+static_ctx_file=$(mktemp)
+# Replace the lock-only EXIT trap (set right after acquire_lock above) with a
+# combined version that also cleans the tempfile. Bash 3.2 replaces traps;
+# explicit rm -f calls below still cover the success and failure paths, but
+# the trap protects the window between mktemp and the first explicit rm -f
+# against signal-induced exits.
+trap 'release_lock "$LOCK_FILE"; rm -f "$static_ctx_file"' EXIT
+printf '## Existing Instincts\n%s\n\n## Global Instincts\n%s\n' \
+  "$INSTINCT_YAML" "$GLOBAL_INSTINCT_YAML" > "$static_ctx_file"
+
 # ── Invoke reinforcer agent ───────────────────────────────────────────────
-AGENT_OUTPUT=$(echo "$AGENT_INPUT" | invoke_agent "$EVOLVE_DIR/agents/reinforcer.md" 2>/dev/null) || {
+AGENT_OUTPUT=$(printf '%s\n' "$AGENT_INPUT" | invoke_agent "$EVOLVE_DIR/agents/reinforcer.md" "$static_ctx_file" 2>/dev/null) || {
+  rm -f "$static_ctx_file"
   evolve_log "reinforce-worker.sh: agent invocation failed"
   exit 0
 }
+rm -f "$static_ctx_file"
 
 # ── Read config values ────────────────────────────────────────────────────
 REINFORCEMENT_INC=$(read_config '.instincts.reinforcement_increment // 0.05' "$PROJECT_ID" 2>/dev/null || echo "0.05")

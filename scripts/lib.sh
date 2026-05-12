@@ -322,12 +322,26 @@ YAML
 }
 
 # ── Agent invocation ────────────────────────────────────────────────────────
-# invoke_agent <agent_file>
+# invoke_agent <agent_file> [static_context_file]
 # Reads stdin, strips YAML frontmatter from agent file, invokes claude -p.
 # Returns the agent's stdout.
+#
+# Optional second argument: path to a static-context file whose contents are
+# appended to the system prompt under a "# Runtime Context" separator. This
+# places the static prefix in the system-prompt cache breakpoint (Anthropic
+# prompt caching reliably hits the system-prompt breakpoint; stdin user-message
+# prefixes have unreliable cache placement). The caller owns the lifecycle of
+# static_context_file (mktemp + rm); invoke_agent does NOT delete it.
+#
+# The static-context arg is silently ignored when: $2 is empty, $2 refers to a
+# non-existent path, or $2 refers to an existing but empty file (-s test). This
+# matches the asymmetry in graduate.sh (line 677), which uses "< file" stdin
+# redirection and has no static prefix to cache — do NOT add a static-context
+# arg to that call site.
 
 invoke_agent() {
   local agent_file="$1"
+  local static_context_file="${2:-}"
   local tmp_system
   tmp_system="$(mktemp)"
 
@@ -352,6 +366,15 @@ invoke_agent() {
       "$agent_file" > "$tmp_system"
   else
     cp "$agent_file" "$tmp_system"
+  fi
+
+  # Append static context to system prompt when provided, non-empty, and file exists.
+  # The sentinel comment is invisible to the LLM but avoids collision with markdown "---".
+  # The trailing newline guards against static-context files without a final newline.
+  if [[ -n "$static_context_file" && -s "$static_context_file" ]]; then
+    printf '\n<!-- evolve:runtime-context-begin -->\n# Runtime Context\n' >> "$tmp_system"
+    cat "$static_context_file" >> "$tmp_system"
+    printf '\n' >> "$tmp_system"
   fi
 
   # Invoke claude with EVOLVE_SUBPROCESS to prevent recursive hooks

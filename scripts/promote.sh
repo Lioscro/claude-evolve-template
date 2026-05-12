@@ -63,6 +63,8 @@ OVERLAP_THRESHOLD=$(read_config '.clustering.rejection_overlap_threshold // 0.7'
 OVERLAP_THRESHOLD=$(validate_numeric "$OVERLAP_THRESHOLD" "$_NUMERIC_NONNEG_FLOAT" "0.7")
 MIN_GROUPING_SIZE=$(read_config '.clustering.min_grouping_size // 2' 2>/dev/null || echo "2")
 MIN_GROUPING_SIZE=$(validate_numeric "$MIN_GROUPING_SIZE" "$_NUMERIC_NONNEG_INT" "2")
+INJECTION_THRESHOLD=$(read_config '.instincts.injection_threshold // 0.5' 2>/dev/null || echo "0.5")
+INJECTION_THRESHOLD=$(validate_numeric "$INJECTION_THRESHOLD" "$_NUMERIC_NONNEG_FLOAT" "0.5")
 
 # ── Acquire global lock ──────────────────────────────────────────────────
 if ! acquire_lock "$GLOBAL_LOCK"; then
@@ -107,9 +109,20 @@ for project_index in "$EVOLVE_DIR"/projects/*/instincts/index.yaml; do
 
   instincts_dir="$(dirname "$project_index")"
 
-  # Build YAML for this project's instincts
+  # Read all instinct confidences in one yq call to avoid O(N) subprocess cost
+  conf_csv=$(yq '[.instincts[].confidence // 0] | join(",")' "$project_index" 2>/dev/null || echo "")
+  IFS=',' read -ra inst_confs <<< "$conf_csv"
+
+  # Build YAML for this project's instincts (filtered by injection_threshold)
   project_yaml=""
+  skipped_count=0
   for ((i=0; i<inst_count; i++)); do
+    # Filter instincts below injection_threshold
+    inst_conf="${inst_confs[$i]:-0}"
+    if (( $(echo "$inst_conf < $INJECTION_THRESHOLD" | bc -l) )); then
+      skipped_count=$((skipped_count + 1))
+      continue
+    fi
     inst_file=$(yq ".instincts[$i].file" "$project_index" 2>/dev/null || echo "")
     inst_path="$instincts_dir/$inst_file"
     if [[ -f "$inst_path" ]]; then
@@ -117,6 +130,9 @@ for project_index in "$EVOLVE_DIR"/projects/*/instincts/index.yaml; do
       project_yaml+=$'\n---\n'
     fi
   done
+  if [[ "$skipped_count" -gt 0 ]]; then
+    evolve_log "promote.sh: project $project_id skipped $skipped_count instinct(s) below threshold ($INJECTION_THRESHOLD)"
+  fi
 
   if [[ -n "$project_yaml" ]]; then
     PROJECT_INSTINCTS_INPUT+="### Project: $project_id"$'\n'
@@ -188,34 +204,47 @@ if [[ -f "$GLOBAL_PROPOSAL_ARCHIVED_INDEX" ]]; then
   done
 fi
 
-# ── Build agent input ────────────────────────────────────────────────────
-AGENT_INPUT=""
-AGENT_INPUT+="## Project Instincts"$'\n\n'
-AGENT_INPUT+="$PROJECT_INSTINCTS_INPUT"
-AGENT_INPUT+=$'\n'
-AGENT_INPUT+="## Existing Global Instincts"$'\n\n'
-if [[ -n "$GLOBAL_INSTINCTS_YAML" ]]; then
-  AGENT_INPUT+="$GLOBAL_INSTINCTS_YAML"
-else
-  AGENT_INPUT+="(none)"$'\n'
-fi
-AGENT_INPUT+=$'\n'
-AGENT_INPUT+="## Archived Global Proposals"$'\n\n'
-if [[ -n "$ARCHIVED_CONTEXT" ]]; then
-  AGENT_INPUT+="$ARCHIVED_CONTEXT"
-else
-  AGENT_INPUT+="(none)"$'\n'
-fi
+# ── Build static-context tempfile and minimal trigger ────────────────────
+static_ctx_file=$(mktemp)
+# Combined EXIT trap: release global lock AND remove tempfile
+trap 'release_lock "$GLOBAL_LOCK"; rm -f "$static_ctx_file"' EXIT
+
+{
+  printf '## Project Instincts\n'
+  if [[ -n "$PROJECT_INSTINCTS_INPUT" ]]; then
+    printf '%s\n' "$PROJECT_INSTINCTS_INPUT"
+  else
+    printf '(none)\n'
+  fi
+  printf '\n## Existing Global Instincts\n'
+  if [[ -n "$GLOBAL_INSTINCTS_YAML" ]]; then
+    printf '%s\n' "$GLOBAL_INSTINCTS_YAML"
+  else
+    printf '(none)\n'
+  fi
+  printf '\n## Archived Global Proposals\n'
+  if [[ -n "$ARCHIVED_CONTEXT" ]]; then
+    printf '%s\n' "$ARCHIVED_CONTEXT"
+  else
+    printf '(none)\n'
+  fi
+} > "$static_ctx_file"
+
+AGENT_INPUT="Identify cross-project promotion candidates from the runtime context."
 
 # ── Release global lock before agent invocation ──────────────────────────
+# Keep a tempfile-only EXIT trap during the long agent invocation so a
+# signal-induced exit still cleans the static-context tempfile.
 release_lock "$GLOBAL_LOCK"
-trap - EXIT
+trap 'rm -f "$static_ctx_file"' EXIT
 
 # ── Invoke promoter agent ────────────────────────────────────────────────
-AGENT_OUTPUT=$(echo "$AGENT_INPUT" | invoke_agent "$EVOLVE_DIR/agents/promoter.md" 2>/dev/null) || {
+AGENT_OUTPUT=$(echo "$AGENT_INPUT" | ENABLE_PROMPT_CACHING_1H=1 invoke_agent "$EVOLVE_DIR/agents/promoter.md" "$static_ctx_file" 2>/dev/null) || {
+  rm -f "$static_ctx_file"
   evolve_log "promote.sh: agent invocation failed"
   exit 0
 }
+rm -f "$static_ctx_file"
 
 # ── Check for NONE ───────────────────────────────────────────────────────
 TRIMMED_OUTPUT=$(echo "$AGENT_OUTPUT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')

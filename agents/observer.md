@@ -13,8 +13,10 @@ structured decisions.
 
 You will be given:
 1. A list of existing instincts (YAML) with their IDs, triggers, actions,
-   domains, and confidence scores
-2. New observations (JSONL) from one or more sessions
+   domains, and confidence scores — this arrives in the system prompt under
+   `# Runtime Context` as `## Existing Instincts`
+2. New observations (JSONL) from one or more sessions — this arrives on stdin
+   as `## New Observations`
 
 ## Output format
 

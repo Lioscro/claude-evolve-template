@@ -1,5 +1,11 @@
 observer:
   enabled: true
+reinforcement:
+  # Maximum number of recent observation lines sent to the reinforcer agent per
+  # Stop-hook invocation. Limits token cost for long sessions (the session JSONL
+  # grows unbounded; capping to the last N lines covers near-real-time patterns
+  # without transmitting the full history). Configurable per-project.
+  recent_observations_window: 50
 instincts:
   initial_confidence: 0.5
   reinforcement_increment: 0.05

@@ -78,6 +78,21 @@ if [[ "$INSTINCT_COUNT" -gt 0 ]]; then
   done
 fi
 
+# ── Build static-context tempfile (Existing Instincts for system prompt) ───
+# Written once outside the batch loop so all batches share the same cached
+# system-prompt prefix (Anthropic auto-applies a cache breakpoint to the
+# system prompt, so this avoids re-sending the instinct blob each batch).
+STATIC_CTX=$(mktemp)
+if [[ -n "$INSTINCT_YAML" ]]; then
+  printf '## Existing Instincts\n%s\n' "$INSTINCT_YAML" > "$STATIC_CTX"
+else
+  printf '## Existing Instincts\n(none)\n' > "$STATIC_CTX"
+fi
+# Replace the lock-only EXIT trap (set right after acquire_lock above) with a
+# combined version. Bash 3.2 replaces traps -- setting a second trap EXIT
+# would lose lock release.
+trap 'release_lock "$LOCK_FILE"; rm -f "$STATIC_CTX"' EXIT
+
 # ── Read config values ─────────────────────────────────────────────────────
 MAX_OBS=$(read_config '.observations.max_observations_per_run // 200' "$PROJECT_ID" 2>/dev/null || echo "200")
 MAX_OBS=$(validate_numeric "$MAX_OBS" "$_NUMERIC_NONNEG_INT" "200")
@@ -134,21 +149,15 @@ DELETED_COUNT=0
 process_batch() {
   local batch_observations="$1"
 
-  # Build agent input
+  # Build agent input: only New Observations on stdin.
+  # ## Existing Instincts is in STATIC_CTX (system prompt) for cache efficiency.
   local agent_input=""
-  agent_input+="## Existing Instincts"$'\n'
-  if [[ -n "$INSTINCT_YAML" ]]; then
-    agent_input+="$INSTINCT_YAML"
-  else
-    agent_input+="(none)"
-  fi
-  agent_input+=$'\n\n'
   agent_input+="## New Observations"$'\n'
   agent_input+="$batch_observations"
 
-  # Invoke observer agent
+  # Invoke observer agent with static-context file for instinct prefix caching
   local agent_output
-  agent_output=$(echo "$agent_input" | invoke_agent "$EVOLVE_DIR/agents/observer.md" 2>/dev/null) || {
+  agent_output=$(echo "$agent_input" | invoke_agent "$EVOLVE_DIR/agents/observer.md" "$STATIC_CTX" 2>/dev/null) || {
     evolve_log "observe.sh: agent invocation failed"
     return 1
   }
@@ -494,6 +503,11 @@ for f in "${OBSERVATION_FILES[@]}"; do
 done
 
 evolve_log "observe.sh: archived ${#OBSERVATION_FILES[@]} observation file(s)"
+
+# ── Cleanup static-context tempfile (normal path) ─────────────────────────
+# The EXIT trap also removes it on abnormal exit; this handles the normal path
+# before we clear the trap below.
+rm -f "$STATIC_CTX"
 
 # ── Release lock (EXIT trap handles this) ──────────────────────────────────
 release_lock "$LOCK_FILE"

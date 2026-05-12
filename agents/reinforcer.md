@@ -12,9 +12,9 @@ demonstrated by the observations.
 ## Input format
 
 You will be given:
-1. `## Existing Instincts` -- project-scoped instincts (YAML) with their IDs, triggers, and actions
-2. `## Global Instincts` -- cross-project instincts (YAML). Their IDs start with `global-`. This section may be empty or absent.
-3. `## Recent Observations` -- observations (JSONL) from the current session
+1. `## Existing Instincts` -- project-scoped instincts (YAML) with their IDs, triggers, and actions. Arrives in the system prompt under `# Runtime Context`.
+2. `## Global Instincts` -- cross-project instincts (YAML). Their IDs start with `global-`. This section may be empty or absent. Arrives in the system prompt under `# Runtime Context` alongside `## Existing Instincts`.
+3. `## Recent Observations` -- the last N observations (JSONL) from the current session (windowed to keep token cost bounded). Arrives on stdin.
 
 ## Output format
 

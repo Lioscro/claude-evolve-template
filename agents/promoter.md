@@ -11,12 +11,17 @@ cross-project patterns are candidates for promotion to global instincts.
 
 ## Input format
 
-You will be given:
-1. Project instincts grouped by project ID -- each project section contains
-   the full YAML of that project's instincts
-2. Existing global instincts -- instincts already promoted globally
-3. Archived global proposals -- previously proposed (and rejected/approved)
+All context arrives in the system prompt under `# Runtime Context`:
+1. `## Project Instincts` -- project instincts grouped by project ID; each
+   project section contains the full YAML of that project's instincts
+   (pre-filtered to confidence >= injection_threshold, so low-confidence
+   instincts are excluded)
+2. `## Existing Global Instincts` -- instincts already promoted globally
+3. `## Archived Global Proposals` -- previously proposed (and rejected/approved)
    global promotions, with their source instinct IDs
+
+Stdin contains only a minimal trigger instruction; the substantive input is
+entirely in the system prompt sections above.
 
 ## Output format
 

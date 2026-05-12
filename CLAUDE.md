@@ -73,6 +73,44 @@ Stop              ->  reinforce.sh (backgrounds reinforce-worker.sh)
 
 Agent `.md` files in `agents/` have YAML frontmatter (model, description) followed by the system prompt. `invoke_agent` in `lib.sh` strips frontmatter, extracts the model, writes the body to a temp file, and calls `claude -p --system-prompt-file`.
 
+#### `invoke_agent` static-context argument
+
+Signature: `invoke_agent <agent_file> [static_context_file]`
+
+When `static_context_file` is provided (non-empty path to a non-empty file), its contents are appended to the system-prompt temp file under a `# Runtime Context` separator:
+
+```
+{agent body}
+
+<!-- evolve:runtime-context-begin -->
+# Runtime Context
+{contents of static_context_file}
+```
+
+**Why the system prompt, not stdin:** Anthropic prompt caching reliably places a cache breakpoint at the system prompt. Stdin (user-message) prefixes have unreliable breakpoint placement from the CLI. Routing the static prefix through `--system-prompt-file` is the only way to get consistent cache hits for repeated invocations with the same static content.
+
+**Caller owns the lifecycle.** `invoke_agent` does NOT delete `static_context_file`. Callers must use `mktemp` + explicit `rm -f`, placing cleanup in both success paths and failure branches (e.g., `|| { rm -f "$ctx"; exit 0; }`). When a script has an EXIT trap, the tempfile cleanup should be combined into that trap rather than added as a separate trap (bash 3.2 replaces traps; it does not stack them).
+
+**Graceful no-op:** the static-context arg is silently ignored when `$2` is empty, refers to a non-existent path, or refers to an existing but empty file. This is intentional — callers may conditionally build context without needing to branch on whether content exists.
+
+**Asymmetry — graduate.sh:** `graduate.sh` (line 677) invokes `invoke_agent` with stdin via `< file` redirection. It has no static prefix to cache, so it passes only a single arg. Do NOT add a static-context arg to that call site.
+
+**1-hour cache for low-frequency callers:** `promote.sh` invokes the promoter agent at most hourly (frequency gate). The default 5-minute prompt-cache TTL is always cold at that interval, so the promoter call is prefixed with `ENABLE_PROMPT_CACHING_1H=1` to opt into Anthropic's 1-hour cache tier. The env var propagates to the `claude -p` subprocess inside `invoke_agent`. Reinforcer (per-turn, within session) and observer (per-session-start, batches sub-second apart) keep the 5-minute default — cross-session cache hits are unlikely to be byte-stable anyway due to instinct mutation between sessions.
+
+**Example (reinforce-worker.sh pattern, from Phase 2):**
+```bash
+static_ctx=$(mktemp)
+printf '## Existing Instincts\n%s\n\n## Global Instincts\n%s\n' \
+  "$INSTINCT_YAML" "$GLOBAL_INSTINCT_YAML" > "$static_ctx"
+AGENT_OUTPUT=$(printf '%s\n' "$AGENT_INPUT" | invoke_agent "$EVOLVE_DIR/agents/reinforcer.md" "$static_ctx") || {
+  rm -f "$static_ctx"
+  exit 0
+}
+rm -f "$static_ctx"
+```
+
+**`injection_threshold` is now load-bearing in two subsystems.** Originally, `instincts.injection_threshold` (default 0.5) controlled only which instincts are injected into Claude's context (inject-instincts.sh). After Phase 4, the promoter also uses this threshold to pre-filter project instincts before agent invocation — instincts below the threshold are excluded from the promoter's input entirely. Operators tuning `injection_threshold` should know they are affecting both the context injection subsystem and the promoter pre-filter simultaneously.
+
 ### Confidence Lifecycle
 
 Defaults below; see `config.yaml` for current values (the parenthetical numbers reflect the committed defaults at the time of writing — keep `config.yaml` as the source of truth).

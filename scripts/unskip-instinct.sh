@@ -23,8 +23,8 @@ if [[ $# -eq 3 ]]; then
   GLOBAL_FLAG="--global"
 fi
 
-if ! validate_id "$PROJECT_ID"; then
-  echo "ERROR: invalid PROJECT_ID (must match $_EVOLVE_ID_REGEX): $PROJECT_ID" >&2
+if ! validate_project_id "$PROJECT_ID"; then
+  echo "ERROR: invalid PROJECT_ID (must match $_EVOLVE_PROJECT_ID_REGEX): $PROJECT_ID" >&2
   exit 1
 fi
 if ! validate_id "$INSTINCT_ID"; then

@@ -502,7 +502,7 @@ if [[ "$SCOPE" == "global" ]]; then
   STAGING_DIR="$EVOLVE_DIR/consolidations/global"
   TARGET_LABEL="global"
 else
-  if ! validate_id "$PROJECT_ID"; then
+  if ! validate_project_id "$PROJECT_ID"; then
     echo "consolidate.sh: invalid project id '$PROJECT_ID'" >&2
     exit 1
   fi

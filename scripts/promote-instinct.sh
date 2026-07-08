@@ -86,7 +86,7 @@ TOTAL_OBS_COUNT=0
 for ((i=0; i<SPI_COUNT; i++)); do
   proj=$(yq ".source_project_instincts[$i].project" "$INSTINCT_DATA_FILE" 2>/dev/null || echo "")
   inst=$(yq ".source_project_instincts[$i].instinct" "$INSTINCT_DATA_FILE" 2>/dev/null || echo "")
-  if ! validate_id "$proj"; then
+  if ! validate_project_id "$proj"; then
     evolve_log "ERROR promote-instinct.sh: invalid identifier source_project_instincts[$i].project='$proj'"
     exit 1
   fi

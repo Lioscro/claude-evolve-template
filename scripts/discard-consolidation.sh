@@ -24,7 +24,7 @@ validate_id "$CID" || { echo "discard-consolidation.sh: invalid cid '$CID'" >&2;
 if [[ "$SCOPE" == "global" ]]; then
   STAGING_DIR="$EVOLVE_DIR/consolidations/global"
 else
-  validate_id "$PROJECT_ID" || { echo "discard-consolidation.sh: invalid project id" >&2; exit 1; }
+  validate_project_id "$PROJECT_ID" || { echo "discard-consolidation.sh: invalid project id" >&2; exit 1; }
   STAGING_DIR="$EVOLVE_DIR/consolidations/$PROJECT_ID"
 fi
 

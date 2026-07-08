@@ -13,7 +13,7 @@ evolve_is_subprocess && exit 0
 # ── Arguments ──────────────────────────────────────────────────────────────
 PROJECT_ID="${1:?graduate.sh requires PROJECT_ID as \$1}"
 
-if ! validate_id "$PROJECT_ID"; then
+if ! validate_project_id "$PROJECT_ID"; then
   evolve_log "graduate.sh: invalid PROJECT_ID '$PROJECT_ID'"
   exit 0
 fi

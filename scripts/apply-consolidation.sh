@@ -444,7 +444,7 @@ if [[ "$SCOPE" == "global" ]]; then
   MAXC_PATH='.global_instincts.max_confidence // 1'
   STAGING_DIR="$EVOLVE_DIR/consolidations/global"
 else
-  validate_id "$PROJECT_ID" || { echo "apply-consolidation.sh: invalid project id" >&2; exit 1; }
+  validate_project_id "$PROJECT_ID" || { echo "apply-consolidation.sh: invalid project id" >&2; exit 1; }
   init_project "$PROJECT_ID"
   BASE_DIR="$EVOLVE_DIR/projects/$PROJECT_ID"; LOCK_FILE="$BASE_DIR/evolve.lock"
   CONF_PID="$PROJECT_ID"; MEM_PREFIX=""

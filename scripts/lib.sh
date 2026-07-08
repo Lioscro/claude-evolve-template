@@ -64,8 +64,17 @@ yaml_escape_dq() {
 _EVOLVE_ID_REGEX='^[a-z0-9][a-z0-9_-]{0,79}$'
 _EVOLVE_TYPES_RE='^(skill|rule|memory|promotion)$'
 
+# Project ids come from resolve_project (git-remote path segments or a cwd path
+# with '/' -> '_'), so unlike slug ids they legitimately contain uppercase and
+# dots and can be long. Allow [A-Za-z0-9._-]; require an alnum first char (no
+# leading dot/hyphen -> no ".."-prefix traversal, no option injection); forbid
+# '/' so the id stays a single path component. Same non-quoting rule as above.
+_EVOLVE_PROJECT_ID_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+
 validate_id() { [[ "$1" =~ $_EVOLVE_ID_REGEX ]]; }
 validate_type() { [[ "$1" =~ $_EVOLVE_TYPES_RE ]]; }
+# validate_project_id <string> -- 0 if a safe project id (see regex above).
+validate_project_id() { [[ "$1" =~ $_EVOLVE_PROJECT_ID_REGEX ]]; }
 
 # ── Logging ─────────────────────────────────────────────────────────────────
 

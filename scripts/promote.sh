@@ -330,7 +330,7 @@ process_promotion_document() {
     local proj inst
     proj=$(yq ".source_project_instincts[$si].project" "$tmp_doc" 2>/dev/null || echo "")
     inst=$(yq ".source_project_instincts[$si].instinct" "$tmp_doc" 2>/dev/null || echo "")
-    if ! validate_id "$proj" || ! validate_id "$inst"; then
+    if ! validate_project_id "$proj" || ! validate_id "$inst"; then
       evolve_log "WARN promote.sh: skipping document id='$inst_id' -- invalid SPI[$si] project='$proj' instinct='$inst'"
       rm -f "$tmp_doc"
       return

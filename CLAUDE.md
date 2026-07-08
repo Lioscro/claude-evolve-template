@@ -164,6 +164,41 @@ Unlike the Jaccard-based overlap check for clusterer proposals, graduate.sh uses
 - Persistence: both `rejected` and `permanently_rejected` statuses permanently block re-graduation. `superseded_by_auto` does NOT block (the superseded proposal was replaced by auto-approval, not vetoed).
 - Manual unblock: edit the archived proposals index to remove or change the entry's status, then run `unskip-instinct.sh` if a skip-state sidecar entry also exists.
 
+### Consolidation (`/consolidate`)
+
+A user-invoked skill (`skills/consolidate/SKILL.md`, `disable-model-invocation: true`) that merges redundant entries into fewer comprehensive ones, reducing injected-context bloat. **Manual-only — NOT chained into `observe.sh`.** It is review-gated: each proposed merge is staged and presented for Approve/Reject before any destructive change.
+
+Scope arg mirrors `/evolve` (empty = cwd + global; `all` = every managed project + global; else a single project). Three entry types:
+
+| Entry type | Project | Global | Candidate rule |
+|---|---|---|---|
+| instinct | ✅ | ✅ | confidence in **[`consolidation.min_confidence`, `propose_memory_threshold`)**, not in any pending proposal, single-domain groups |
+| memory | ✅ | ✅ | any indexed memory |
+| proposal | ✅ | ❌ | pending **skill/rule** proposals only, same-type |
+
+**Deliberate sub-scoping (not silent):**
+- **Instinct band separation.** Instincts `>= propose_memory_threshold` are graduation-owned; merging them with `confidence=max` would auto-trip `graduate.sh` into an unapproved memory. Their redundancy is resolved one layer up by *memory* consolidation after they graduate. Analyze excludes instincts already referenced by pending proposals (`source_instincts` + `source_global_instincts`), mirroring `cluster.sh`.
+- **Proposal consolidation = skill/rule, project scope only.** `memory` proposals are excluded (graduation re-graduation blocking keys on `source_instinct_count == 1`; a multi-instinct merge would leave sources unblocked and graduate.sh would regenerate them). `promotion` proposals are excluded (owned by `promote.sh`). A merged proposal is itself a new *pending* proposal reviewed via `/evolve`; sources are archived as `consolidated` (not rejected, so they do not block re-proposal).
+
+**Flow:** `consolidate.sh <project_id> | --global` (analysis) → snapshots candidates under the lock, releases it, invokes a consolidator agent per type, parses `---`-separated docs, and writes one *staging* file per merge. Never mutates durable state; never git-pushes. The skill presents each staged merge and dispatches `apply-consolidation.sh` / `discard-consolidation.sh`.
+
+**Agents** (`model: claude-sonnet-4-6`, `{min_group_size}` substituted like the clusterer): `consolidator-instinct.md`, `consolidator-memory.md`, `consolidator-proposal.md`. Agent failure is a clean no-op (logged; pass returns "no merges").
+
+**Staging** lives at `$EVOLVE_DIR/consolidations/<project_id>/` and `$EVOLVE_DIR/consolidations/global/` — **outside `data/`**, so `evolve_git_push` (which `git add`s only `data/`) never commits transient per-machine working state. No index; enumerated by globbing. Re-running analysis clears that scope's prior *pending* staging (merges are recomputable). Created point-of-use with `mkdir -p` (does not depend on `init_project`). cid format: `consolidation-<entry_type>-<merged_name>-<epoch>` (passes `validate_id`).
+
+**`apply-consolidation.sh <project_id> | --global <cid>`** acquires the lock (blocking, 30s), re-validates every source under the lock, and **aborts the cid (exit 3, staging preserved)** if the pool moved: a source vanished, an instinct source crossed `propose_memory_threshold`, or an instinct source became referenced by a pending proposal. Instinct merge math is recomputed from **live** sources (absorbing interim reinforcement/decay): `confidence = min(max_confidence, max(sources))`, `observation_count = sum`, `source_sessions` concatenated (project) / `source_projects` unioned + `source_project_instincts` concatenated (global), `created = min`, `last_reinforced = max`. Sources are archived with `archived_reason: consolidated`, `archived_by: <cid>`. Idempotent: a crashed apply self-heals on re-run (merged entry / archived sources are checked before (re)writing). Writes only under `$EVOLVE_DIR` (never a project checkout), so consolidations are approvable from any cwd. On success: removes staging, releases lock, `evolve_git_push`.
+
+Config keys (`config.yaml` `consolidation:` block):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `consolidation.agent_model` | `claude-sonnet-4-6` | Model for the three consolidator agents (via `EVOLVE_AGENT_MODEL_OVERRIDE`) |
+| `consolidation.min_confidence` | 0.5 | Instinct candidate floor (band lower bound) |
+| `consolidation.min_group_size` | 2 | Minimum entries per merge group |
+| `consolidation.max_per_run` | 10 | Cap on merges staged per scope per pass per run |
+
+The instinct band's upper bound reads `instincts.propose_memory_threshold` / `global_instincts.propose_memory_threshold` (not a separate key).
+
 ### `lib.sh` Helpers
 
 #### `archive_proposal()`
@@ -182,9 +217,9 @@ archive_proposal <proposal_file> <proposal_id> <archive_dir> <archived_index> <l
   - `scope=global, type=promotion`: `source_project_instincts: [<{project, instinct} objects>]` + `source_project_count: <scalar read from proposal yaml>` (the count scalar is read directly from `.source_project_count`, not computed as array length, because they may legitimately diverge)
   - `scope=global, type=<unknown>`: 6-field entry (`id`, `file`, `type`, `domain`, `status`, `resolved_at`) with no `source_*` field; WARN logged
 - Returns 0 on success or recovery (crash-recovery: source already at archive path, indexes self-heal). Returns 1 if proposal is missing from both live and archived paths. Returns 2 on invalid `new_status`.
-- `new_status` must be one of `approved|rejected|permanently_rejected|superseded_by_auto`; any other value returns 2 (defends against accidental arg shift).
+- `new_status` must be one of `approved|rejected|permanently_rejected|superseded_by_auto|consolidated`; any other value returns 2 (defends against accidental arg shift). `consolidated` is used by `apply-consolidation.sh` to archive source skill/rule proposals that were merged (project-scope archived-index schema applies).
 
-Called from `reject-proposal.sh`, `reject-global-proposal.sh`, and `graduate.sh` (for `superseded_by_auto` archival). The caller must hold the appropriate lock (`evolve.lock` for project, `global.lock` for global). `approve-proposal.sh` and `approve-global-proposal.sh` keep their own inline archival logic (they have richer outer state — IS_RECOVERY/MID_ARCHIVAL/artifact-write/instinct-archival — that does not fit the helper).
+Called from `reject-proposal.sh`, `reject-global-proposal.sh`, `graduate.sh` (for `superseded_by_auto` archival), and `apply-consolidation.sh` (for `consolidated` archival of merged source proposals). The caller must hold the appropriate lock (`evolve.lock` for project, `global.lock` for global). `approve-proposal.sh` and `approve-global-proposal.sh` keep their own inline archival logic (they have richer outer state — IS_RECOVERY/MID_ARCHIVAL/artifact-write/instinct-archival — that does not fit the helper).
 
 **Behavioral note for `reject-global-proposal.sh`:** prior to the helper extraction, this script hard-errored when the live proposal file was missing (`if [[ ! -f "$PROPOSAL_PATH" ]]; then exit 1`). The current code routes through `archive_proposal()`, whose recovery branch self-heals the live and archived indexes when the file is already at the archived path (the typical aftermath of an interrupted prior run). This matches the recovery semantics of `reject-proposal.sh` — re-running rejection on an interrupted run now reconciles state instead of failing.
 

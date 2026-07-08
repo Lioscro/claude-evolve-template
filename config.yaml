@@ -37,6 +37,18 @@ global_instincts:
 graduation:
   max_per_run_per_scope: 10
   agent_model: claude-haiku-4-5-20251001
+consolidation:
+  # Merges redundant instincts/memories/proposals into comprehensive entries.
+  # User-invoked via the /consolidate skill (manual-only; not chained into observe.sh).
+  agent_model: claude-sonnet-4-6
+  # Instinct candidate floor. Only instincts with confidence in
+  # [min_confidence, propose_memory_threshold) are consolidated -- above that
+  # ceiling they are graduation-owned (see instincts.propose_memory_threshold).
+  min_confidence: 0.5
+  # Minimum entries required to form a merge group.
+  min_group_size: 2
+  # Cap on merge groups staged per scope per pass in a single analysis run.
+  max_per_run: 10
 observations:
   max_tool_response_length: 500
   max_observations_per_run: 200

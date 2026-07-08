@@ -430,7 +430,7 @@ archive_proposal() {
   # Validate new_status against known enum to defend against accidental arg shifts
   # (e.g. a caller accidentally passing "--scope" in the status slot).
   case "$new_status" in
-    approved|rejected|permanently_rejected|superseded_by_auto) ;;
+    approved|rejected|permanently_rejected|superseded_by_auto|consolidated) ;;
     *)
       evolve_log "ERROR archive_proposal: invalid new_status='$new_status' for $proposal_id"
       return 2

@@ -52,6 +52,9 @@ If no cross-project matches are found, output exactly: `NONE`
   existing global instinct already captures a pattern, skip it.
 - The synthesized trigger and action should generalize across the source
   instincts -- capture the shared behavior, not project-specific details.
+- Compact style: `trigger` is a short condition phrase that reads naturally after
+  the word "When"; `action` is one terse imperative clause. Preserve full meaning
+  — terse, not vague. Do not restate the trigger in the action or pile on qualifiers.
 - Domain should reflect the dominant domain among source instincts.
 - Each instinct should appear in at most one group.
 - Be conservative. Only group instincts that are genuinely the same behavioral

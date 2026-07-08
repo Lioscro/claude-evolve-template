@@ -32,8 +32,8 @@ source_instincts:
   - {instinct_id_2}
   - ...
 merged_name: {short kebab-case identifier, <= 45 chars}
-merged_trigger: {one sentence — the unified situation that fires the instinct}
-merged_action: {the unified recommended behavior, covering all sources}
+merged_trigger: {short condition phrase reading after "When", covering the shared situation}
+merged_action: {one terse imperative clause covering every source's behavior}
 merged_domain: {one domain}
 ```
 
@@ -52,7 +52,8 @@ If no group of genuinely redundant instincts can be formed, output exactly:
   most 45 characters, and MUST NOT equal any source instinct id.
 - `merged_trigger` and `merged_action` MUST faithfully cover the behavior of
   EVERY instinct in the group — do not drop a source's meaning, and do not invent
-  behavior that no source describes.
+  behavior that no source describes. Stay terse: trigger a short condition phrase
+  (reads after "When"), action one imperative clause — no enumeration or run-ons.
 - `merged_domain` should be the domain shared by the sources; if they differ,
   pick the one that best fits the merged behavior.
 - It is always acceptable to leave instincts unmerged. Prefer omission over a

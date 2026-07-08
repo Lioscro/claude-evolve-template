@@ -49,6 +49,17 @@ consolidation:
   min_group_size: 2
   # Cap on merge groups staged per scope per pass in a single analysis run.
   max_per_run: 10
+compression:
+  # Rewrites individual instinct trigger/action text and memory bodies to be
+  # terse in place (1-to-1, meaning-preserving). User-invoked via the /compress
+  # skill (manual-only; not chained into observe.sh).
+  agent_model: claude-sonnet-4-6
+  # Cap on rewrites staged per entry-type per scope in a single analysis run.
+  max_per_run: 25
+  # Length pre-filters (chars): skip entries already terser than these. Instinct
+  # counts trigger+action; memory counts the body.
+  min_instinct_chars: 160
+  min_memory_chars: 320
 observations:
   max_tool_response_length: 500
   max_observations_per_run: 200

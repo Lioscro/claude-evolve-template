@@ -43,11 +43,7 @@ merged_name: {short kebab-case identifier, <= 45 chars}
 merged_title: {one sentence ending in a period}
 merged_description: {one line, under 120 characters}
 merged_content: |
-  {unified rule(s) as prose}
-
-  **Why:** {brief reasoning, combining the sources}
-
-  **How to apply:** {when/where this guidance applies}
+  {unified rule(s) as 1-3 tight sentences with the essential rationale folded inline — NO section headers}
 ```
 
 If no group of genuinely overlapping memories can be formed, output exactly:
@@ -62,8 +58,9 @@ If no group of genuinely overlapping memories can be formed, output exactly:
 - `merged_content` MUST preserve the substance of EVERY source memory — do not
   drop guidance, and do not invent guidance no source contains. It should be
   shorter than the concatenation of its sources (that is the point).
-- `merged_content` uses the **Why** / **How to apply** markdown convention and
-  stays under 500 words. No YAML frontmatter inside the body.
+- `merged_content` is 1-3 tight sentences with rationale folded inline — NO
+  `**Why:**` / `**How to apply:**` headers, no bullet scaffolding. It stays under
+  ~80 words. No YAML frontmatter inside the body.
 - `merged_name` MUST be kebab-case matching `^[a-z0-9][a-z0-9_-]{0,44}$`, be at
   most 45 characters, MUST NOT start with the literal prefix `global-`, MUST NOT
   end with a `-YYYY-MM-DD` date suffix, and MUST NOT equal any source memory id.

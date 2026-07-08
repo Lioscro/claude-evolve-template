@@ -35,11 +35,7 @@ name: <kebab-case identifier matching ^[a-z0-9][a-z0-9_-]{0,44}$>
 title: <one-sentence human-readable title>
 description: <one-line summary suitable for the memory index>
 proposed_content: |
-  <the rule itself, as a single sentence>
-
-  **Why:** <brief reasoning behind the rule, 1-2 sentences>
-
-  **How to apply:** <when/where this guidance applies, 1-2 sentences>
+  <the rule as 1-2 tight sentences, with the essential rationale folded inline — NO section headers>
 ```
 
 Constraints:
@@ -56,11 +52,12 @@ Constraints:
   stripper double-strips and produces a wrong identifier.)
 - `title` is one sentence ending in a period.
 - `description` is one line, under 120 characters.
-- `proposed_content` is markdown using the **Why** / **How to apply** convention.
+- `proposed_content` is 1-2 tight sentences with rationale folded inline — NO
+  `**Why:**` / `**How to apply:**` headers, no bullet scaffolding.
 - Do not invent context not supported by the instinct. If the trigger is "when about to
   run rm -rf in a test directory," the **Why** can reference safety, but cannot invent
   a specific past incident.
-- Keep `proposed_content` under 500 words.
+- Keep `proposed_content` under ~60 words. Terse, not vague — preserve the essential guidance.
 
 ## Insufficient context
 
@@ -95,16 +92,7 @@ name: bash-syntax-check-after-edit
 title: Run `bash -n` on every shell script you modify before declaring the work done.
 description: Catches syntax errors in shell-script edits before they ship.
 proposed_content: |
-  After modifying any shell script in the codebase, run `bash -n <script>` on it before
-  declaring the work done.
-
-  **Why:** Bash syntax errors are easy to introduce during quick edits and trivially
-  caught with a syntax-only check; missing this lets broken scripts ship without anyone
-  noticing until runtime.
-
-  **How to apply:** Whenever an edit touches a shell script — single-file or multi-file
-  change — run `bash -n` on every modified file as part of the pre-commit checklist. On
-  macOS, also run `/bin/bash -n` if bash 3.2 compatibility is in scope.
+  After modifying any shell script, run `bash -n <script>` (and `/bin/bash -n` for macOS bash 3.2) before declaring the work done — syntax errors are trivially caught this way but otherwise ship silently.
 ```
 
 ## Example 2 — insufficient context

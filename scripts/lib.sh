@@ -61,7 +61,10 @@ yaml_escape_dq() {
 #
 # _EVOLVE_ID_REGEX must NOT be quoted on the RHS of =~ in bash 3.2 --
 # quoting causes a literal-string match. Always: [[ "$x" =~ $_EVOLVE_ID_REGEX ]]
-_EVOLVE_ID_REGEX='^[a-z0-9][a-z0-9_-]{0,79}$'
+# Length bound is 128 chars (not 80): generated ids concatenate a prefix, a slug,
+# and a date/epoch suffix (e.g. global-proposal-<instinct-name>-YYYY-MM-DD) that
+# can exceed 80 for long instinct names; the lifecycle scripts validate these ids.
+_EVOLVE_ID_REGEX='^[a-z0-9][a-z0-9_-]{0,127}$'
 _EVOLVE_TYPES_RE='^(skill|rule|memory|promotion)$'
 
 # Project ids come from resolve_project (git-remote path segments or a cwd path

@@ -17,6 +17,8 @@ All runtime state lives in `~/.claude/evolve/` (symlinked from this repo by `ins
 
 Prerequisites: `jq`, `yq` (mikefarah/yq v4), `flock`, `claude` CLI. On macOS install `flock` via `brew install flock`.
 
+Adding a **new skill directory** under `skills/` requires re-running `./install.sh` once — skills are symlinked per-directory into `~/.claude/skills/`, so a new dir is not registered until the install loop runs again. New `scripts/*.sh`, `agents/*.md`, and `config.yaml` edits need no reinstall (the `scripts/`, `agents/` dirs and `config.yaml` are already symlinked as whole units); new scripts do need the executable bit, which `install.sh` sets on every run.
+
 ## Shell Constraints
 
 All scripts must run on macOS default bash (3.2). This means:
@@ -198,6 +200,35 @@ Config keys (`config.yaml` `consolidation:` block):
 | `consolidation.max_per_run` | 10 | Cap on merges staged per scope per pass per run |
 
 The instinct band's upper bound reads `instincts.propose_memory_threshold` / `global_instincts.propose_memory_threshold` (not a separate key).
+
+### Compression (`/compress`)
+
+A user-invoked skill (`skills/compress/SKILL.md`, `disable-model-invocation: true`) that rewrites individual instinct `trigger`/`action` text and memory bodies to be **terse in place** — a 1→1, meaning-preserving rewrite that reduces per-session injected volume. **Manual-only — NOT chained into `observe.sh`.** Review-gated: each rewrite is staged and presented for Approve/Reject before any change.
+
+**Distinct from `/consolidate`:** consolidate MERGES redundant entries (N→1, archives sources, changes count/identity); compress SHORTENS one entry's text (1→1, same id/confidence/provenance/count). Because identity never changes, compression needs **none** of consolidate's guards — no confidence band, no `min_group_size`, no pending-proposal exclusion, no merge math, no archival. Instincts and memories of any confidence are eligible.
+
+Scope arg mirrors `/evolve` and `/consolidate` (empty = cwd + global; `all` = every managed project + global; else a single project). Two entry types, both project and global: `instinct` and `memory`. Proposals are out of scope (not injected into session context).
+
+**Flow:** `compress.sh <project_id> | --global` (analysis) → under the lock, snapshots candidate instincts/memories that exceed the length pre-filter, releases the lock, invokes a compressor agent per type, and writes one *staging* file per rewrite. The skill presents each staged rewrite (before = live entry; after = `compressed_*`) and dispatches `apply-compression.sh` / `discard-compression.sh`.
+
+**Agents** (`model` overridden by `compression.agent_model`): `compressor-instinct.md`, `compressor-memory.md`. Each emits one `source_id`-keyed YAML doc per entry it shortens (or `NONE`); it never merges, renames, or changes ids. Agent failure / `NONE` is a clean no-op.
+
+**Staging** lives at `$EVOLVE_DIR/compressions/<project_id>/` and `$EVOLVE_DIR/compressions/global/` — **outside `data/`**, so `evolve_git_push` never commits it. No index; enumerated by globbing. Re-running analysis clears that scope's prior *pending* staging. cid format: `compression-<entry_type>-<source_id>-<epoch>` (passes `validate_id`; a `source_id` long enough to overflow the 128-char id limit is skipped with a log).
+
+**Staging file fields:** `entry_type`, `scope`, `project_id`, `source_id` (singular), the `compressed_*` result, and originals for apply-time **change-detection** — instinct: `orig_trigger`/`orig_action` (scalar string compare); memory: `orig_content_sha` (a content checksum, avoiding YAML block-scalar round-trip issues on the body).
+
+**`apply-compression.sh <project_id> | --global <cid>`** acquires the lock (blocking, 30s), then: if the live entry already equals the compressed form → idempotent success; if the live entry differs from the staged originals → **aborts (exit 3, staging preserved)** so the skill re-runs analysis (never clobbers a concurrent reinforce/edit). Otherwise it rewrites in place — instinct: `trigger`+`action` in the `.yaml` (via `yq … strenv`) and the denormalized `trigger` in `instincts/index.yaml`; memory: overwrites the body `.md` **directly** (NOT via `write-artifact.sh`, which is no-clobber) and updates `title`/`description` in `memory/index.yaml`. Confidence, provenance, timestamps, and entry count are untouched. On success: removes staging, releases lock, `evolve_git_push "evolve(compress): applied <cid>"`. **`discard-compression.sh`** removes only the staging file (no lock, no push).
+
+Config keys (`config.yaml` `compression:` block):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `compression.agent_model` | `claude-sonnet-4-6` | Model for the two compressor agents (via `EVOLVE_AGENT_MODEL_OVERRIDE`) |
+| `compression.max_per_run` | 25 | Cap on rewrites staged per entry-type per scope per run |
+| `compression.min_instinct_chars` | 160 | Skip instincts whose `trigger`+`action` is already ≤ this |
+| `compression.min_memory_chars` | 320 | Skip memory bodies already ≤ this |
+
+**Compact-by-default creator agents:** the five agents that generate injected entry text now instruct a compact format directly — `observer.md` and `promoter.md` (instinct `trigger`/`action`), `consolidator-instinct.md` (merged trigger/action), and `memory-writer.md` and `consolidator-memory.md` (memory bodies as 1-2 sentences, no `**Why:**`/`**How to apply:**` scaffolding). The compact convention is duplicated across these five prompts (there is no shared format spec). `/compress` is the tool for shortening entries created before this change.
 
 ### `lib.sh` Helpers
 

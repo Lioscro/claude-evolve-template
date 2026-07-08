@@ -34,8 +34,8 @@ existing instinct.
 ```
 CREATE
 id: {kebab-case-id}
-trigger: {when this pattern activates — be specific}
-action: {what the behavior is — be specific}
+trigger: {short condition phrase, reads after "When" — e.g. "before a git commit in a project with quality tooling"}
+action: {one terse imperative clause — e.g. "run lint, format, type-check, tests; all must pass before staging"}
 domain: {one of: code-style, testing, git, debugging, file-organization,
          tooling, communication, architecture, dependencies}
 ```
@@ -59,5 +59,8 @@ Use when an observation is a one-off action, not a pattern.
 - Triggers should describe conditions, not specific file names or variable names.
 - Actions should describe behaviors, not specific implementations.
 - Do not create instincts that duplicate existing ones with different wording.
+- Compact style: `trigger` is a short condition phrase that reads naturally after
+  the word "When"; `action` is one terse imperative clause. Preserve full meaning
+  — terse, not vague. Do not restate the trigger in the action or pile on qualifiers.
 
 Output ONLY the structured responses above, one per pattern. No commentary.

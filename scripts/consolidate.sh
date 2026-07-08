@@ -396,8 +396,8 @@ process_proposal_doc() {
   if any_seen "$src_raw"; then evolve_log "consolidate.sh(proposal): skip -- overlaps a prior group"; rm -f "$content_file"; return; fi
 
   local content; content=$(cat "$content_file"); rm -f "$content_file"
-  local union_uniq; union_uniq=$(printf '%s' "$union" | grep -v '^$' | sort -u)
-  local union_count; union_count=$(printf '%s' "$union_uniq" | grep -c . || echo 0)
+  local union_uniq; union_uniq=$(printf '%s' "$union" | grep -v '^$' | sort -u || true)
+  local union_count; union_count=$(printf '%s' "$union_uniq" | grep -c . || true)
 
   local cid="consolidation-proposal-${name}-${EPOCH_NOW}"
   local sf="$STAGING_DIR/${cid}.yaml"
